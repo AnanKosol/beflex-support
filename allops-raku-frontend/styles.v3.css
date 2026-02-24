@@ -56,6 +56,17 @@ body {
   background: rgba(255, 255, 255, 0.05);
 }
 
+.nav-item:hover,
+.nav-item:visited,
+.nav-item:active {
+  color: #fff;
+  text-decoration: none;
+}
+
+.nav-item + .nav-item {
+  margin-top: 8px;
+}
+
 .main-content {
   margin-left: 260px;
   width: calc(100% - 260px);

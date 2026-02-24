@@ -37,6 +37,7 @@ const CREDENTIAL_USERNAME_ID = process.env.CREDENTIAL_USERNAME_ID || '1';
 const CREDENTIAL_PASSWORD_ID = process.env.CREDENTIAL_PASSWORD_ID || '2';
 const ALFRESCO_ADMIN_USERNAME = process.env.ALLOPS_ALFRESCO_ADMIN_USERNAME || '';
 const ALFRESCO_ADMIN_PASSWORD = process.env.ALLOPS_ALFRESCO_ADMIN_PASSWORD || '';
+const GROUP_IMPORT_REQUIRED_GROUP = process.env.ALLOPS_GROUP_IMPORT_REQUIRED_GROUP || 'GROUP_ALFRESCO_ADMINISTRATORS';
 
 const IMPORTS_TABLE = 'allops_raku_imports';
 const TASK_LOGS_TABLE = 'allops_raku_task_logs';
@@ -400,6 +401,27 @@ async function checkUserGroup(username, ticket) {
   return entries.some((item) => item?.entry?.id === REQUIRED_GROUP);
 }
 
+async function checkUserGroupByBasicAuth(username, authHeader, groupId) {
+  const url = `${ALFRESCO_BASE_URL}/alfresco/api/-default-/public/alfresco/versions/1/people/${encodeURIComponent(username)}/groups?maxItems=1000`;
+  const response = await axios.get(url, {
+    timeout: ALFRESCO_TIMEOUT_MS,
+    headers: {
+      Authorization: authHeader
+    }
+  });
+
+  const entries = response?.data?.list?.entries || [];
+  return entries.some((item) => item?.entry?.id === groupId);
+}
+
+function formatAlfrescoError(error, fallbackMessage = 'Unknown Alfresco API error') {
+  const status = error?.response?.status;
+  const brief = error?.response?.data?.error?.briefSummary;
+  const key = error?.response?.data?.error?.errorKey;
+  const detail = brief || key || error?.message || fallbackMessage;
+  return status ? `HTTP ${status}: ${detail}` : detail;
+}
+
 function authMiddleware(req, res, next) {
   const authorization = req.headers.authorization || '';
   const [type, token] = authorization.split(' ');
@@ -460,22 +482,7 @@ async function ensureGroupExists(groupId, displayName, authHeader) {
   }
 }
 
-async function isUserAlreadyInGroup(groupId, userId, authHeader) {
-  const memberUrl = `${ALFRESCO_BASE_URL}/alfresco/api/-default-/public/alfresco/versions/1/groups/${encodeURIComponent(groupId)}/members?where=${encodeURIComponent(`(id='${userId}')`)}&maxItems=100`;
-  const response = await axios.get(memberUrl, {
-    timeout: ALFRESCO_TIMEOUT_MS,
-    headers: { Authorization: authHeader }
-  });
-
-  const entries = response?.data?.list?.entries || [];
-  return entries.some((item) => item?.entry?.id === userId);
-}
-
 async function addUserToGroup(groupId, userId, authHeader) {
-  if (await isUserAlreadyInGroup(groupId, userId, authHeader)) {
-    return { added: false, reason: 'already-member' };
-  }
-
   try {
     await axios.post(
       `${ALFRESCO_BASE_URL}/alfresco/api/-default-/public/alfresco/versions/1/groups/${encodeURIComponent(groupId)}/members`,
@@ -646,7 +653,25 @@ async function processGroupMembershipImport(taskId) {
 
     const credential = await getAlfrescoServiceCredential();
     const authHeader = getBasicAuthHeader(credential.username, credential.password);
-    await addTaskLog(taskId, 'INFO', `Using credential source: ${credential.source}`);
+    await addTaskLog(taskId, 'INFO', `Using service account: ${credential.username} (${credential.source})`);
+
+    try {
+      const hasRequiredGroup = await checkUserGroupByBasicAuth(
+        credential.username,
+        authHeader,
+        GROUP_IMPORT_REQUIRED_GROUP
+      );
+      if (!hasRequiredGroup) {
+        throw new Error(
+          `Service account '${credential.username}' is missing required group '${GROUP_IMPORT_REQUIRED_GROUP}' for user/group management`
+        );
+      }
+    } catch (error) {
+      const reason = formatAlfrescoError(error, 'Cannot validate service account permissions');
+      throw new Error(
+        `Service account permission check failed: ${reason}. Please update credential-manager to use an Alfresco admin account.`
+      );
+    }
 
     const inputPath = path.join(UPLOAD_DIR, task.stored_filename);
     const rows = parseGroupImportRows(inputPath);
@@ -708,9 +733,14 @@ async function processGroupMembershipImport(taskId) {
           }
         } catch (error) {
           failedRows += 1;
-          const reason = error?.response?.data
+          let reason = error?.response?.data
             ? JSON.stringify(error.response.data).slice(0, 400)
             : (error?.message || 'Unknown row error');
+
+          if (error?.response?.status === 403) {
+            reason = `Permission denied by Alfresco (403). Service account '${credential.username}' needs admin privileges (e.g. '${GROUP_IMPORT_REQUIRED_GROUP}') to create groups/add members.`;
+          }
+
           await addTaskLog(taskId, 'ERROR', `Line ${row.lineNo}: ${reason}`);
         }
       }

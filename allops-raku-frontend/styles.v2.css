@@ -48,9 +48,6 @@ body {
 }
 
 .nav-item {
-  display: block;
-  color: #fff;
-  text-decoration: none;
   padding: 15px 25px;
   border-left: 4px solid var(--primary-green);
   background: rgba(255, 255, 255, 0.05);

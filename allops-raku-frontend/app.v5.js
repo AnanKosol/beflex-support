@@ -162,9 +162,6 @@ function startPolling(taskId) {
   taskPolling = setInterval(() => {
     loadTaskStatus(taskId).catch((error) => {
       uploadError.textContent = error.message;
-      if (logsBox) {
-        logsBox.textContent = `[ERROR] ${error.message}`;
-      }
     });
   }, 3000);
 }
@@ -217,12 +214,6 @@ async function handleUpload() {
   } catch (error) {
     setTaskStatus('Failed', 'failed');
     uploadError.textContent = error.message;
-    if (taskMeta && currentTaskId) {
-      taskMeta.textContent = `Task #${currentTaskId}`;
-    }
-    if (logsBox) {
-      logsBox.textContent = `[ERROR] ${error.message}`;
-    }
   }
 }
 
