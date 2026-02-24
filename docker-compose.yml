@@ -1,0 +1,48 @@
+services:
+  allops-raku-backend:
+    build:
+      context: ./allops-raku-backend
+    container_name: allops-raku-backend
+    restart: always
+    environment:
+      - TZ=Asia/Bangkok
+      - PORT=3000
+      - ALFRESCO_BASE_URL=${ALFRESCO_BASE_URL}
+      - PERMISSION_SERVICE_URL=${PERMISSION_SERVICE_URL}
+      - ALLOPS_REQUIRED_GROUP=GROUP_allops-raku
+      - ALLOPS_JWT_SECRET=${ALLOPS_JWT_SECRET}
+      - ALLOPS_UPLOAD_DIR=/app/uploads
+      - ALFRESCO_TIMEOUT_MS=10000
+      - PERMISSION_TIMEOUT_MS=30000
+      - PGHOST=${EXTENSION_DB_PGHOST}
+      - PGPORT=${EXTENSION_DB_PGPORT}
+      - PGDATABASE=${EXTENSION_DB_NAME}
+      - PGUSER=${EXTENSION_DB_PGUSER}
+      - PGPASSWORD=${EXTENSION_DB_PGPASSWORD}
+      - CREDENTIAL_MANAGER_URL=${CREDENTIAL_MANAGER_URL}
+      - CREDENTIAL_MANAGER_TOKEN=${CREDENTIAL_MANAGER_BACKEND_STATIC_API_TOKEN}
+      - CREDENTIAL_SERVICE_NAME=alfresco
+      - CREDENTIAL_USERNAME_ID=1
+      - CREDENTIAL_PASSWORD_ID=2
+    volumes:
+      - ./data/uploads:/app/uploads
+
+  allops-raku-frontend:
+    build:
+      context: ./allops-raku-frontend
+    container_name: allops-raku-frontend
+    restart: always
+    depends_on:
+      - allops-raku-backend
+
+  raku-proxy:
+    image: nginx:1.25.4
+    container_name: allops-raku-proxy
+    restart: always
+    depends_on:
+      - allops-raku-frontend
+      - allops-raku-backend
+    ports:
+      - "8088:80"
+    volumes:
+      - ./proxy/nginx.conf:/etc/nginx/nginx.conf:ro
