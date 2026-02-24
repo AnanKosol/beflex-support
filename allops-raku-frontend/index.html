@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/raku/" />
+    <title>AllOps Raku | Permission Import</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="sidebar">
+      <div class="logo-area">
+        <div class="logo-placeholder">B CIRCLE <span>AllOps</span></div>
+      </div>
+      <div class="nav-links">
+        <div class="nav-item">Login</div>
+      </div>
+    </div>
+
+    <div class="main-content">
+      <header>
+        <div class="breadcrumb">Alfresco Admin Support / Tools</div>
+        <h1>AllOps Raku (楽)</h1>
+      </header>
+
+      <section class="card" id="loginCard">
+        <h3>Authentication</h3>
+        <p class="muted">ล็อกอินด้วยผู้ใช้ Alfresco และต้องเป็นสมาชิกกลุ่ม allops-raku</p>
+        <div class="grid">
+          <div>
+            <label for="username">Username</label>
+            <input id="username" type="text" autocomplete="username" />
+          </div>
+          <div>
+            <label for="password">Password</label>
+            <input id="password" type="password" autocomplete="current-password" />
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn-primary" id="loginBtn">Login</button>
+          <span id="loginStatus" class="status">Not authenticated</span>
+        </div>
+        <div id="loginError" class="error"></div>
+      </section>
+
+      <section class="card">
+        <h3>Next Step</h3>
+        <p class="muted">หลัง Login สำเร็จ ระบบจะพาไปหน้าใช้งาน Service แยกโดยอัตโนมัติ</p>
+      </section>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

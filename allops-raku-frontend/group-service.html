@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/raku/" />
+    <title>AllOps Raku | Group Member Service</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="sidebar">
+      <div class="logo-area">
+        <div class="logo-placeholder">B CIRCLE <span>AllOps</span></div>
+      </div>
+      <div class="nav-links">
+        <a class="nav-item" href="service.html">Import Permission</a>
+        <a class="nav-item" href="group-service.html">Import User to Group</a>
+      </div>
+    </div>
+
+    <div class="main-content" data-service-name="group-member-import" data-upload-endpoint="/group-memberships/import" data-page-title="AllOps Raku (楽) - User to Group Service" data-page-desc="อัปโหลดไฟล์ Excel ตาม format (group_id, group_display_name, user_id) เพื่อสร้าง Group ที่ขาดและเพิ่ม User เข้า Group แบบอัตโนมัติ" data-risk-note="คำเตือน: การสร้าง Group จำนวนมากทำให้ Solr Re-index หนาแน่นชั่วคราว แนะนำรันช่วง Off-peak" data-upload-label="Excel file (Import_user_to_group.xlsx)" data-history-title="Group Import Report">
+      <header>
+        <div class="breadcrumb">Alfresco Admin Support / Tools</div>
+        <h1>AllOps Raku (楽) - User to Group Service</h1>
+      </header>
+
+      <section class="card">
+        <h3>Session</h3>
+        <div class="actions">
+          <span id="loginStatus" class="status">Authenticated</span>
+          <button class="btn-secondary" id="logoutBtn">Logout</button>
+        </div>
+      </section>
+
+      <section class="card" id="importCard">
+        <h3>Import User to Group via Excel</h3>
+        <p class="muted" id="pageDesc">
+          อัปโหลดไฟล์ Excel เพื่อสร้าง Group ที่ไม่มี และเพิ่ม User เข้ากลุ่มตามข้อมูลในไฟล์
+        </p>
+        <ul>
+          <li><b>group_id</b> ต้องขึ้นต้นด้วย <b>GROUP_</b></li>
+          <li><b>group_display_name</b> ใช้ตอนสร้าง group ใหม่</li>
+          <li><b>user_id</b> คือ username พนักงาน</li>
+          <li>หากมากกว่า 1,000 แถว ระบบจะทำงานแบบ batch 100 แถว + delay 500ms</li>
+        </ul>
+
+        <div class="card" style="margin-bottom: 12px; border-top-width: 0; border: 1px solid #f0df9b; background: #fff8dd;">
+          <b>คำแนะนำ:</b> รันช่วง Off-peak เพื่อลดผลกระทบต่อการค้นหาไฟล์ (Solr Re-index)
+        </div>
+
+        <label for="fileInput">Excel file (Import_user_to_group.xlsx)</label>
+        <input id="fileInput" type="file" accept=".xlsx" />
+
+        <div class="actions">
+          <button class="btn-primary" id="uploadBtn">เริ่มนำเข้า (Import)</button>
+          <button class="btn-secondary" id="refreshBtn">Refresh History</button>
+          <span id="taskStatus" class="status">Idle</span>
+        </div>
+        <div id="uploadError" class="error"></div>
+      </section>
+
+      <section class="card" id="logsCard">
+        <h3>Task Logs</h3>
+        <div id="taskMeta" class="muted"></div>
+        <div class="logs" id="logsBox">No logs</div>
+      </section>
+
+      <section class="card" id="historyCard">
+        <h3>Group Import Report</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Timestamp</th>
+              <th>User</th>
+              <th>Filename</th>
+              <th>Status</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody"></tbody>
+        </table>
+      </section>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

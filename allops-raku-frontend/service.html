@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/raku/" />
+    <title>AllOps Raku | Service</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="sidebar">
+      <div class="logo-area">
+        <div class="logo-placeholder">B CIRCLE <span>AllOps</span></div>
+      </div>
+      <div class="nav-links">
+        <a class="nav-item" href="service.html">Import Permission</a>
+        <a class="nav-item" href="group-service.html">Import User to Group</a>
+      </div>
+    </div>
+
+    <div class="main-content" data-service-name="permission-import" data-upload-endpoint="/imports" data-page-title="AllOps Raku (楽) - Permission Service" data-page-desc="อัปโหลดไฟล์ Excel ที่ออกแบบ Permission เสร็จแล้ว ระบบจะส่งไป backend และประมวลผลกับ permission-service แบบ async" data-risk-note="คำเตือน: หากมีงานปริมาณมาก ควรรันช่วง Off-peak เพื่อลดผลกระทบต่อ Solr indexing" data-upload-label="Excel file" data-history-title="Import Report">
+      <header>
+        <div class="breadcrumb">Alfresco Admin Support / Tools</div>
+        <h1>AllOps Raku (楽) - Permission Service</h1>
+      </header>
+
+      <section class="card">
+        <h3>Session</h3>
+        <div class="actions">
+          <span id="loginStatus" class="status">Authenticated</span>
+          <button class="btn-secondary" id="logoutBtn">Logout</button>
+        </div>
+      </section>
+
+      <section class="card" id="importCard">
+        <h3>Import Permission via Excel</h3>
+        <p class="muted">
+          อัปโหลดไฟล์ Excel ที่ออกแบบ Permission เสร็จแล้ว ระบบจะส่งไป backend และประมวลผลกับ permission-service แบบ async
+        </p>
+        <ul>
+          <li>รองรับเฉพาะไฟล์นามสกุล <b>.xlsx</b></li>
+          <li>เมื่อระบบรับงานแล้ว จะตอบกลับทันทีเป็น In Progress พร้อม task_id</li>
+          <li>หน้าจอนี้จะ polling ติดตามสถานะและแสดง logs</li>
+        </ul>
+
+        <label for="fileInput">Excel file</label>
+        <input id="fileInput" type="file" accept=".xlsx" />
+
+        <div class="actions">
+          <button class="btn-primary" id="uploadBtn">เริ่มนำเข้า (Import)</button>
+          <button class="btn-secondary" id="refreshBtn">Refresh History</button>
+          <span id="taskStatus" class="status">Idle</span>
+        </div>
+        <div id="uploadError" class="error"></div>
+      </section>
+
+      <section class="card" id="logsCard">
+        <h3>Task Logs</h3>
+        <div id="taskMeta" class="muted"></div>
+        <div class="logs" id="logsBox">No logs</div>
+      </section>
+
+      <section class="card" id="historyCard">
+        <h3>Import Report</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Timestamp</th>
+              <th>User</th>
+              <th>Filename</th>
+              <th>Status</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody"></tbody>
+        </table>
+      </section>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
