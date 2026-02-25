@@ -37,12 +37,45 @@
         <p class="muted" id="pageDesc">
           อัปโหลดไฟล์ Excel เพื่อสร้าง Group ที่ไม่มี และเพิ่ม User เข้ากลุ่มตามข้อมูลในไฟล์
         </p>
-        <ul>
-          <li><b>group_id</b> ต้องขึ้นต้นด้วย <b>GROUP_</b></li>
-          <li><b>group_display_name</b> ใช้ตอนสร้าง group ใหม่</li>
-          <li><b>user_id</b> คือ username พนักงาน</li>
-          <li>หากมากกว่า 1,000 แถว ระบบจะทำงานแบบ batch 100 แถว + delay 500ms</li>
-        </ul>
+        <details class="guide-collapsible">
+          <summary class="guide-toggle">ขั้นตอนการใช้งาน (กดเพื่อขยาย/ยุบ)</summary>
+          <div class="guide-content">
+            <div class="guide-note guide-note-accent">
+              <h4>ขั้นตอนการใช้งาน</h4>
+              <ol class="inline-list ordered-list">
+                <li>ดาวน์โหลดไฟล์ตัวอย่าง: <a href="samples/group-member-template.xlsx" download>group-member-template.xlsx</a> (ใหม่)</li>
+                <li>กรอกข้อมูลคอลัมน์ <b>group_id</b>, <b>group_display_name</b>, <b>user_id</b> ให้ครบทุกแถว</li>
+                <li>กดปุ่ม <span class="action-tag">Choose file</span> เพื่อเลือกไฟล์ Excel</li>
+                <li>กดปุ่ม <span class="action-tag">เริ่มนำเข้า (Import)</span></li>
+              </ol>
+
+              <p class="muted">ตัวอย่างหน้าตา Excel (อิงรูปแบบภาพแนบ)</p>
+              <div class="excel-preview-wrap">
+                <table class="excel-preview">
+                  <thead>
+                    <tr>
+                      <th>group_id</th>
+                      <th>group_display_name</th>
+                      <th>user_id</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr><td>GROUP_AO_Consumer</td><td>AO Consumer</td><td>user.demo01</td></tr>
+                    <tr><td>GROUP_AO_Consumer</td><td>AO Consumer</td><td>user.demo02</td></tr>
+                    <tr><td>GROUP_AO_demo</td><td>AO Demo</td><td>user.demo03</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <h4>หมายเหตุ</h4>
+              <ul class="inline-list">
+                <li><b>group_id</b> ต้องขึ้นต้นด้วย <b>GROUP_</b></li>
+                <li><b>group_display_name</b> ใช้ตอนสร้าง group ใหม่</li>
+                <li><b>user_id</b> คือ username พนักงาน</li>
+                <li>หากมากกว่า 1,000 แถว ระบบจะทำงานแบบ batch 100 แถว + delay 500ms</li>
+              </ul>
+            </div>
+          </div>
+        </details>
 
         <div class="card" style="margin-bottom: 12px; border-top-width: 0; border: 1px solid #f0df9b; background: #fff8dd;">
           <b>คำแนะนำ:</b> รันช่วง Off-peak เพื่อลดผลกระทบต่อการค้นหาไฟล์ (Solr Re-index)

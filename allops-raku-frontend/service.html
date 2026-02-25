@@ -37,11 +37,69 @@
         <p class="muted">
           อัปโหลดไฟล์ Excel ที่ออกแบบ Permission เสร็จแล้ว ระบบจะส่งไป backend และประมวลผลกับ permission-service แบบ async
         </p>
-        <ul>
-          <li>รองรับเฉพาะไฟล์นามสกุล <b>.xlsx</b></li>
-          <li>เมื่อระบบรับงานแล้ว จะตอบกลับทันทีเป็น In Progress พร้อม task_id</li>
-          <li>หน้าจอนี้จะ polling ติดตามสถานะและแสดง logs</li>
-        </ul>
+        <details class="guide-collapsible">
+          <summary class="guide-toggle">ขั้นตอนการใช้งาน (กดเพื่อขยาย/ยุบ)</summary>
+          <div class="guide-content">
+            <div class="guide-note guide-note-accent">
+              <h4>ขั้นตอนการใช้งาน</h4>
+              <ol class="inline-list ordered-list">
+                <li>ดาวน์โหลดไฟล์ตัวอย่าง: <a href="samples/permission-template.xlsx" download>permission-template.xlsx</a> ทำการปรับแก้ตามสิทธิ์ที่ต้องการ</li>
+                <li>เตรียมโครงสร้าง path (Level 1-X) และคอลัมน์กลุ่มตามรูปแบบไฟล์ตัวอย่าง</li>
+                <li>กดปุ่ม <span class="action-tag">Choose file</span> เพื่อเลือกไฟล์ Excel</li>
+                <li>กดปุ่ม <span class="action-tag">เริ่มนำเข้า (Import)</span> แล้วตรวจสอบ log</li>
+              </ol>
+
+              <p class="muted">ตัวอย่างหน้าตา Excel</p>
+              <div class="excel-preview-wrap">
+                <table class="excel-preview">
+                  <thead>
+                    <tr>
+                      <th>Level 1</th>
+                      <th>Level 2</th>
+                      <th>Level 3</th>
+                      <th>Level 4</th>
+                      <th>GROUP:AO_demo</th>
+                      <th>GROUP:AO_Consumer</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>Sites</td><td>demo</td><td>documentLibrary</td><td>Asset</td><td></td>
+                      <td>SitePreview</td>
+                    </tr>
+                    <tr>
+                      <td>Sites</td><td>demo</td><td>documentLibrary</td><td>Asset_Wealth</td><td></td>
+                      <td>SiteCanDownloadWatermark</td>
+                    </tr>
+                    <tr>
+                      <td>Sites</td><td>demo</td><td>documentLibrary</td><td>Customer Profile OA</td><td></td>
+                      <td>SiteContributor</td>
+                    </tr>
+                    <tr>
+                      <td>Sites</td><td>demo</td><td>documentLibrary</td><td>DRX</td>
+                      <td>SiteManager</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+              <p class="muted">คำสิทธิ์ที่รองรับ</p>
+              <ul class="inline-list permission-list">
+                <li>SitePreview</li>
+                <li>SiteCanDownloadWatermark</li>
+                <li>SiteConsumer</li>
+                <li>SiteContributor</li>
+                <li>SiteCollaborator</li>
+                <li>SiteManager</li>
+              </ul>
+              <h4>หมายเหตุ</h4>
+              <ul class="inline-list">
+                <li>รองรับเฉพาะไฟล์นามสกุล <b>.xlsx</b></li>
+                <li>เมื่อระบบรับงานแล้ว จะตอบกลับทันทีเป็น In Progress พร้อม task_id</li>
+                <li>หน้าจอนี้จะ polling ติดตามสถานะและแสดง logs</li>
+              </ul>
+            </div>
+          </div>
+        </details>
 
         <label for="fileInput">Excel file</label>
         <input id="fileInput" type="file" accept=".xlsx" />

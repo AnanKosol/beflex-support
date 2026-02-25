@@ -205,6 +205,152 @@ td {
   font-size: 13px;
 }
 
+.guide-note {
+  border: 1px solid var(--border);
+  background: var(--bg-light);
+  border-radius: 8px;
+  padding: 14px;
+  margin: 10px 0 14px;
+}
+
+.guide-collapsible {
+  margin-top: 10px;
+}
+
+.guide-toggle {
+  border: 1px solid var(--border);
+  background: var(--bg-light);
+  color: var(--text-dark);
+  border-radius: 6px;
+  padding: 9px 12px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.guide-toggle::-webkit-details-marker {
+  display: none;
+}
+
+.guide-toggle::before {
+  content: '▸';
+  font-size: 11px;
+  color: var(--text-dark);
+  transition: transform 0.15s ease;
+}
+
+.guide-collapsible[open] > .guide-toggle {
+  background: #edf2f6;
+}
+
+.guide-collapsible[open] > .guide-toggle::before {
+  transform: rotate(90deg);
+}
+
+.guide-collapsible:not([open]) > .guide-content {
+  display: none;
+}
+
+.guide-content {
+  margin-top: 8px;
+}
+
+.guide-note h4 {
+  margin: 0 0 10px;
+  color: var(--primary-blue);
+  font-size: 15px;
+}
+
+.guide-note-accent {
+  border-left: 4px solid var(--primary-green);
+}
+
+.markdown-sample {
+  margin: 10px 0;
+  border: 1px solid var(--border);
+  background: var(--white);
+  border-radius: 6px;
+  padding: 12px;
+  white-space: pre-wrap;
+  font-family: Consolas, Monaco, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-dark);
+}
+
+.inline-list {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+
+.inline-list li {
+  margin-bottom: 4px;
+}
+
+.ordered-list {
+  list-style: decimal;
+}
+
+.action-tag {
+  display: inline-block;
+  background: var(--white);
+  border: 1px solid var(--primary-green);
+  color: var(--primary-blue);
+  border-radius: 14px;
+  padding: 2px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.permission-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding-left: 0;
+  margin-top: 10px;
+  list-style: none;
+}
+
+.permission-list li {
+  background: var(--white);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 6px 10px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.excel-preview-wrap {
+  width: 100%;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--white);
+}
+
+.excel-preview {
+  min-width: 680px;
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.excel-preview th,
+.excel-preview td {
+  border: 1px solid #eceff3;
+  padding: 5px 7px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.excel-preview th {
+  background: #f6f8fa;
+  font-weight: 600;
+}
+
 .hidden {
   display: none;
 }

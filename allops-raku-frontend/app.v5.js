@@ -256,7 +256,35 @@ function applyPageConfig() {
   }
 }
 
+function initGuideToggles() {
+  const toggles = document.querySelectorAll('.guide-toggle[data-target]');
+  if (!toggles.length) {
+    return;
+  }
+
+  toggles.forEach((button) => {
+    const targetId = button.getAttribute('data-target');
+    const content = targetId ? document.getElementById(targetId) : null;
+    if (!content) {
+      return;
+    }
+
+    content.classList.add('collapsed');
+    button.setAttribute('aria-expanded', 'false');
+    button.textContent = 'แสดงขั้นตอนการใช้งาน';
+
+    button.addEventListener('click', () => {
+      const isExpanded = button.getAttribute('aria-expanded') === 'true';
+      const nextExpanded = !isExpanded;
+      button.setAttribute('aria-expanded', String(nextExpanded));
+      button.textContent = nextExpanded ? 'ซ่อนขั้นตอนการใช้งาน' : 'แสดงขั้นตอนการใช้งาน';
+      content.classList.toggle('collapsed', !nextExpanded);
+    });
+  });
+}
+
 applyPageConfig();
+initGuideToggles();
 
 if (loginBtn) {
   loginBtn.addEventListener('click', async () => {
