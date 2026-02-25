@@ -6,6 +6,7 @@ COPY package.json ./
 RUN npm install --omit=dev
 
 COPY server.js ./
+COPY services ./services
 
 RUN mkdir -p /app/data /app/uploads
 

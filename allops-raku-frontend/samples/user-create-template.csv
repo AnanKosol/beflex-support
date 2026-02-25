@@ -1,0 +1,3 @@
+username,firstName,lastName,email,password,groups,enabled
+user.demo01,Demo,User01,user.demo01@example.com,Passw0rd!,GROUP_AO_Consumer;GROUP_AO_demo,true
+user.demo02,Demo,User02,user.demo02@example.com,Passw0rd!,GROUP_AO_Consumer,true

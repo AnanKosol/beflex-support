@@ -5,20 +5,17 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/raku/" />
     <title>AllOps Raku | Group Member Service</title>
-    <link rel="stylesheet" href="styles.v3.css?v=20260224-menufix" />
+    <link rel="stylesheet" href="styles.v3.css?v=20260225-themefix1" />
   </head>
-  <body>
+  <body data-nav-page="group-service">
     <div class="sidebar">
       <div class="logo-area">
         <div class="logo-placeholder">B CIRCLE <span>AllOps</span></div>
       </div>
-      <div class="nav-links">
-        <a class="nav-item" href="service.html">Import Permission</a>
-        <a class="nav-item" href="group-service.html">Import User to Group</a>
-      </div>
+      <div class="nav-links"></div>
     </div>
 
-    <div class="main-content" data-service-name="group-member-import" data-upload-endpoint="/group-memberships/import" data-page-title="AllOps Raku - User to Group Service" data-page-desc="อัปโหลดไฟล์ Excel ตาม format (group_id, group_display_name, user_id) เพื่อสร้าง Group ที่ขาดและเพิ่ม User เข้า Group แบบอัตโนมัติ" data-risk-note="คำเตือน: การสร้าง Group จำนวนมากทำให้ Solr Re-index หนาแน่นชั่วคราว แนะนำรันช่วง Off-peak" data-upload-label="Excel file (Import_user_to_group.xlsx)" data-history-title="Group Import Report">
+    <div class="main-content" data-service-name="group-member-import" data-upload-endpoint="/group-memberships/import" data-page-title="AllOps Raku - User to Group Service" data-page-desc="อัปโหลดไฟล์ Excel ตาม format (group_id, group_display_name, user_id) เพื่อสร้าง Group ที่ขาดและเพิ่ม User เข้า Group แบบอัตโนมัติ" data-risk-note="คำเตือน: การสร้าง Group จำนวนมากทำให้ Solr Re-index หนาแน่นชั่วคราว แนะนำรันช่วง Off-peak" data-upload-label="Excel file (Import_user_to_group.xlsx)" data-history-title="Group Import Report" data-session-timeout-minutes="30">
       <header>
         <div class="breadcrumb">Alfresco Admin Support / Tools</div>
         <h1>AllOps Raku - User to Group Service</h1>
@@ -72,6 +69,7 @@
                 <li><b>group_display_name</b> ใช้ตอนสร้าง group ใหม่</li>
                 <li><b>user_id</b> คือ username พนักงาน</li>
                 <li>หากมากกว่า 1,000 แถว ระบบจะทำงานแบบ batch 100 แถว + delay 500ms</li>
+                <li>เป็นการเพิ่ม user ใหม่เข้า group เท่านั้น ไม่ลบ user เดิม</li>
               </ul>
             </div>
           </div>
@@ -116,6 +114,7 @@
       </section>
     </div>
 
-    <script src="app.v5.js?v=20260224-tzfix2"></script>
+    <script src="sidebar-nav.js?v=20260225-nav2"></script>
+    <script src="app.v5.js?v=20260225-session1"></script>
   </body>
 </html>

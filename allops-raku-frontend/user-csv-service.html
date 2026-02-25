@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/raku/" />
+    <title>AllOps Raku | Create User CSV</title>
+    <link rel="stylesheet" href="styles.v3.css?v=20260225-themefix1" />
+  </head>
+  <body data-nav-page="user-csv-service">
+    <div class="sidebar">
+      <div class="logo-area">
+        <div class="logo-placeholder">B CIRCLE <span>AllOps</span></div>
+      </div>
+      <div class="nav-links"></div>
+    </div>
+
+    <div class="main-content" data-service-name="user-csv-import" data-upload-endpoint="/users/import-csv" data-page-title="AllOps Raku - Create User CSV Service" data-page-desc="อัปโหลดไฟล์ CSV เพื่อสร้าง/อัปเดตผู้ใช้ใน Alfresco และเพิ่มสมาชิกเข้า Group แบบอัตโนมัติ" data-upload-label="CSV file (users.csv)" data-history-title="User CSV Import Report" data-session-timeout-minutes="30">
+      <header>
+        <div class="breadcrumb">Alfresco Admin Support / Tools</div>
+        <h1>AllOps Raku - Create User CSV Service</h1>
+      </header>
+
+      <section class="card">
+        <h3>Session</h3>
+        <div class="actions">
+          <span id="loginStatus" class="status">Authenticated</span>
+          <button class="btn-secondary" id="logoutBtn">Logout</button>
+        </div>
+      </section>
+
+      <section class="card" id="importCard">
+        <h3>Import Users via CSV</h3>
+        <p class="muted" id="pageDesc">
+          อัปโหลดไฟล์ CSV เพื่อนำเข้าผู้ใช้งานตามรูปแบบที่กำหนด ระบบจะประมวลผลแบบ async และแสดงผลผ่าน Task Logs
+        </p>
+
+        <details class="guide-collapsible">
+          <summary class="guide-toggle">ขั้นตอนการใช้งาน (กดเพื่อขยาย/ยุบ)</summary>
+          <div class="guide-content">
+            <div class="guide-note guide-note-accent">
+              <h4>ขั้นตอนการใช้งาน</h4>
+              <ol class="inline-list ordered-list">
+                <li>ดาวน์โหลดไฟล์ตัวอย่าง: <a href="samples/user-create-template.csv" download>user-create-template.csv</a></li>
+                <li>กรอกข้อมูลคอลัมน์หลัก: <b>username, firstName, lastName, email, password</b></li>
+                <li>ถ้าต้องการเพิ่มกลุ่ม ให้ระบุคอลัมน์ <b>groups</b> โดยคั่นหลายกลุ่มด้วย <b>;</b> หรือ <b>|</b></li>
+                <li>กดปุ่ม <span class="action-tag">Choose file</span> เพื่อเลือกไฟล์ CSV</li>
+                <li>กดปุ่ม <span class="action-tag">เริ่มนำเข้า (Import)</span> และติดตามผลใน Task Logs</li>
+              </ol>
+
+              <h4>ตัวอย่าง CSV</h4>
+              <pre class="markdown-sample">username,firstName,lastName,email,password,groups,enabled
+user.demo01,Demo,User01,user.demo01@example.com,Passw0rd!,GROUP_AO_Consumer;GROUP_AO_demo,true
+user.demo02,Demo,User02,user.demo02@example.com,Passw0rd!,GROUP_AO_Consumer,true</pre>
+
+              <h4>หมายเหตุ</h4>
+              <ul class="inline-list">
+                <li>รองรับเฉพาะไฟล์นามสกุล <b>.csv</b></li>
+                <li>ถ้า user มีอยู่แล้ว ระบบจะอัปเดตข้อมูล user เดิม</li>
+                <li>หากต้องการปิดการใช้งานผู้ใช้ ให้ระบุ <b>enabled=false</b></li>
+                <li>group ที่ไม่พบในระบบจะถูกสร้างให้อัตโนมัติ</li>
+              </ul>
+            </div>
+          </div>
+        </details>
+
+        <label for="fileInput">CSV file (users.csv)</label>
+        <input id="fileInput" type="file" accept=".csv,text/csv" />
+
+        <div class="actions">
+          <button class="btn-primary" id="uploadBtn">เริ่มนำเข้า (Import)</button>
+          <button class="btn-secondary" id="refreshBtn">Refresh History</button>
+          <span id="taskStatus" class="status">Idle</span>
+        </div>
+        <div id="uploadError" class="error"></div>
+      </section>
+
+      <section class="card" id="logsCard">
+        <h3>Task Logs</h3>
+        <div id="taskMeta" class="muted"></div>
+        <div class="logs" id="logsBox">No logs</div>
+      </section>
+
+      <section class="card" id="historyCard">
+        <h3>User CSV Import Report</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Timestamp</th>
+              <th>User</th>
+              <th>Filename</th>
+              <th>Status</th>
+              <th>Error</th>
+            </tr>
+          </thead>
+          <tbody id="historyBody"></tbody>
+        </table>
+      </section>
+    </div>
+
+    <script src="sidebar-nav.js?v=20260225-nav2"></script>
+    <script src="app.v5.js?v=20260225-session1"></script>
+  </body>
+</html>

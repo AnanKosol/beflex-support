@@ -9,6 +9,7 @@ const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
 const XLSX = require('xlsx');
+const { createAlfrescoAuthProvider } = require('./services/alfresco-auth-provider');
 
 dotenv.config();
 
@@ -35,8 +36,6 @@ const CREDENTIAL_MANAGER_TOKEN = process.env.CREDENTIAL_MANAGER_TOKEN || process
 const CREDENTIAL_SERVICE_NAME = process.env.CREDENTIAL_SERVICE_NAME || 'alfresco';
 const CREDENTIAL_USERNAME_ID = process.env.CREDENTIAL_USERNAME_ID || '1';
 const CREDENTIAL_PASSWORD_ID = process.env.CREDENTIAL_PASSWORD_ID || '2';
-const ALFRESCO_ADMIN_USERNAME = process.env.ALLOPS_ALFRESCO_ADMIN_USERNAME || '';
-const ALFRESCO_ADMIN_PASSWORD = process.env.ALLOPS_ALFRESCO_ADMIN_PASSWORD || '';
 const GROUP_IMPORT_REQUIRED_GROUP = process.env.ALLOPS_GROUP_IMPORT_REQUIRED_GROUP || 'GROUP_ALFRESCO_ADMINISTRATORS';
 
 const IMPORTS_TABLE = 'allops_raku_imports';
@@ -44,6 +43,7 @@ const TASK_LOGS_TABLE = 'allops_raku_task_logs';
 const AUDIT_EVENTS_TABLE = 'allops_raku_audit_events';
 const SERVICE_PERMISSION_IMPORT = 'permission-import';
 const SERVICE_GROUP_MEMBER_IMPORT = 'group-member-import';
+const SERVICE_USER_CSV_IMPORT = 'user-csv-import';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -75,165 +75,15 @@ function normalizeGroupId(rawGroupId) {
   return value.toUpperCase().startsWith('GROUP_') ? value : `GROUP_${value}`;
 }
 
-function parseCredentialPayload(payload) {
-  const candidates = [
-    payload,
-    payload?.data,
-    payload?.entry,
-    payload?.credential,
-    payload?.credentials,
-    payload?.result
-  ];
-
-  for (const item of candidates) {
-    if (!item || typeof item !== 'object') {
-      continue;
-    }
-
-    const username = item.username || item.userName || item.user || item.alfrescoUsername;
-    const password = item.password || item.secret || item.alfrescoPassword;
-
-    if (username && password) {
-      return { username, password };
-    }
-  }
-
-  return null;
-}
-
-function normalizeUrl(baseUrl, endpoint) {
-  return `${String(baseUrl || '').replace(/\/$/, '')}${endpoint}`;
-}
-
-function extractValueFromResponse(data) {
-  if (typeof data === 'string' || typeof data === 'number') {
-    return String(data).trim();
-  }
-  if (!data || typeof data !== 'object') {
-    return '';
-  }
-
-  const value = data.value || data.data || data.entry?.value || data.result?.value;
-  return value ? String(value).trim() : '';
-}
-
-function extractCredentialFromExport(data) {
-  if (!data) {
-    return null;
-  }
-
-  if (Array.isArray(data)) {
-    const byKey = Object.fromEntries(
-      data
-        .filter((item) => item && typeof item === 'object')
-        .map((item) => [String(item.key || item.name || '').toLowerCase(), String(item.value || '').trim()])
-    );
-    const username = byKey['alfresco/username'] || byKey.username || byKey.user || byKey.user_id;
-    const password = byKey['alfresco/password'] || byKey.password || byKey.pass || byKey.secret;
-    if (username && password) {
-      return { username, password };
-    }
-  }
-
-  if (typeof data === 'object') {
-    const candidate = parseCredentialPayload(data);
-    if (candidate?.username && candidate?.password) {
-      return candidate;
-    }
-
-    const directUsername = data['alfresco/username'] || data.username || data.user || data.user_id;
-    const directPassword = data['alfresco/password'] || data.password || data.pass || data.secret;
-    if (directUsername && directPassword) {
-      return {
-        username: String(directUsername).trim(),
-        password: String(directPassword).trim()
-      };
-    }
-  }
-
-  return null;
-}
-
-async function fetchCredentialValueById(id, headers) {
-  const endpoints = [
-    `/credentials/${id}/value`,
-    `/api/credential-manager/credentials/${id}/value`
-  ];
-
-  for (const endpoint of endpoints) {
-    try {
-      const response = await axios.get(normalizeUrl(CREDENTIAL_MANAGER_URL, endpoint), {
-        headers,
-        timeout: 8000
-      });
-
-      const value = extractValueFromResponse(response.data);
-      if (value) {
-        return { value, source: endpoint };
-      }
-    } catch (error) {
-      continue;
-    }
-  }
-
-  return null;
-}
-
-async function getAlfrescoServiceCredential() {
-  if (ALFRESCO_ADMIN_USERNAME && ALFRESCO_ADMIN_PASSWORD) {
-    return {
-      username: ALFRESCO_ADMIN_USERNAME,
-      password: ALFRESCO_ADMIN_PASSWORD,
-      source: 'env'
-    };
-  }
-
-  const endpoints = [
-    `/export/service/${CREDENTIAL_SERVICE_NAME}`,
-    `/api/credential-manager/export/service/${CREDENTIAL_SERVICE_NAME}`,
-    '/api/credentials/alfresco',
-    '/api/credentials?service=alfresco',
-    '/api/credential/alfresco',
-    '/api/secrets/alfresco'
-  ];
-
-  const headers = {};
-  if (CREDENTIAL_MANAGER_TOKEN) {
-    headers.Authorization = `Bearer ${CREDENTIAL_MANAGER_TOKEN}`;
-    headers['x-api-token'] = CREDENTIAL_MANAGER_TOKEN;
-  }
-
-  for (const endpoint of endpoints) {
-    try {
-      const response = await axios.get(normalizeUrl(CREDENTIAL_MANAGER_URL, endpoint), {
-        headers,
-        timeout: 8000
-      });
-
-      const credential = extractCredentialFromExport(response.data) || parseCredentialPayload(response.data);
-      if (credential?.username && credential?.password) {
-        return {
-          ...credential,
-          source: `credential-manager:${endpoint}`
-        };
-      }
-    } catch (error) {
-      continue;
-    }
-  }
-
-  const usernameValue = await fetchCredentialValueById(CREDENTIAL_USERNAME_ID, headers);
-  const passwordValue = await fetchCredentialValueById(CREDENTIAL_PASSWORD_ID, headers);
-  if (usernameValue?.value && passwordValue?.value) {
-    return {
-      username: usernameValue.value,
-      password: passwordValue.value,
-      source: `credential-manager:${usernameValue.source}+${passwordValue.source}`
-    };
-  }
-
-  throw new Error('Cannot get Alfresco service credential from credential-manager or environment');
-}
+const alfrescoAuthProvider = createAlfrescoAuthProvider({
+  alfrescoBaseUrl: ALFRESCO_BASE_URL,
+  alfrescoTimeoutMs: ALFRESCO_TIMEOUT_MS,
+  credentialManagerUrl: CREDENTIAL_MANAGER_URL,
+  credentialManagerToken: CREDENTIAL_MANAGER_TOKEN,
+  credentialServiceName: CREDENTIAL_SERVICE_NAME,
+  credentialUsernameId: CREDENTIAL_USERNAME_ID,
+  credentialPasswordId: CREDENTIAL_PASSWORD_ID
+});
 
 async function addTaskLog(taskId, level, message) {
   await pool.query(
@@ -401,19 +251,6 @@ async function checkUserGroup(username, ticket) {
   return entries.some((item) => item?.entry?.id === REQUIRED_GROUP);
 }
 
-async function checkUserGroupByBasicAuth(username, authHeader, groupId) {
-  const url = `${ALFRESCO_BASE_URL}/alfresco/api/-default-/public/alfresco/versions/1/people/${encodeURIComponent(username)}/groups?maxItems=1000`;
-  const response = await axios.get(url, {
-    timeout: ALFRESCO_TIMEOUT_MS,
-    headers: {
-      Authorization: authHeader
-    }
-  });
-
-  const entries = response?.data?.list?.entries || [];
-  return entries.some((item) => item?.entry?.id === groupId);
-}
-
 function formatAlfrescoError(error, fallbackMessage = 'Unknown Alfresco API error') {
   const status = error?.response?.status;
   const brief = error?.response?.data?.error?.briefSummary;
@@ -436,11 +273,6 @@ function authMiddleware(req, res, next) {
   } catch (error) {
     return res.status(401).json({ message: 'Token expired or invalid' });
   }
-}
-
-function getBasicAuthHeader(username, password) {
-  const basic = Buffer.from(`${username}:${password}`).toString('base64');
-  return `Basic ${basic}`;
 }
 
 async function ensureGroupExists(groupId, displayName, authHeader) {
@@ -528,6 +360,185 @@ function parseGroupImportRows(filePath) {
   }));
 }
 
+function parseCsvLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i += 1) {
+    const char = line[i];
+    const nextChar = line[i + 1];
+
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        current += '"';
+        i += 1;
+      } else {
+        inQuotes = !inQuotes;
+      }
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  result.push(current.trim());
+  return result;
+}
+
+function normalizeCsvHeader(header) {
+  return String(header || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/_/g, '');
+}
+
+function parseCsvText(text) {
+  const content = String(text || '').replace(/^\uFEFF/, '');
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  if (!lines.length) {
+    return [];
+  }
+
+  const headers = parseCsvLine(lines[0]).map(normalizeCsvHeader);
+  const rows = [];
+
+  for (let i = 1; i < lines.length; i += 1) {
+    const columns = parseCsvLine(lines[i]);
+    const row = {};
+    headers.forEach((header, index) => {
+      row[header] = String(columns[index] || '').trim();
+    });
+    rows.push({ row, lineNo: i + 1 });
+  }
+
+  return rows;
+}
+
+function normalizeCsvUserRow(row, lineNo) {
+  const username = row.username || row.userid || row.userid || row.user || row.id || '';
+  const firstName = row.firstname || row.givenname || row.name || '';
+  const lastName = row.lastname || row.surname || row.familyname || '';
+  const email = row.email || row.mail || '';
+  const password = row.password || row.pass || '';
+  const groupsRaw = row.groups || row.group || '';
+  const enabledRaw = row.enabled || row.isenabled || '';
+
+  const groups = String(groupsRaw)
+    .split(/[;|]/)
+    .map((item) => normalizeGroupId(item))
+    .filter((item) => item.length > 0);
+
+  const enabledNormalized = String(enabledRaw || '').trim().toLowerCase();
+  const enabled = enabledNormalized
+    ? !['false', '0', 'no', 'n'].includes(enabledNormalized)
+    : true;
+
+  return {
+    lineNo,
+    username: String(username).trim(),
+    firstName: String(firstName).trim(),
+    lastName: String(lastName).trim(),
+    email: String(email).trim(),
+    password: String(password).trim(),
+    groups,
+    enabled
+  };
+}
+
+function parseUserCsvRows(filePath) {
+  const text = fs.readFileSync(filePath, 'utf8');
+  const rawRows = parseCsvText(text);
+  return rawRows.map(({ row, lineNo }) => normalizeCsvUserRow(row, lineNo));
+}
+
+async function createOrUpdateAlfrescoUser(row, authHeader) {
+  const peopleUrl = `${ALFRESCO_BASE_URL}/alfresco/api/-default-/public/alfresco/versions/1/people`;
+  const requestConfig = {
+    timeout: ALFRESCO_TIMEOUT_MS,
+    headers: {
+      Authorization: authHeader,
+      'Content-Type': 'application/json'
+    }
+  };
+
+  const publicCreatePayload = {
+    id: row.username,
+    userName: row.username,
+    firstName: row.firstName,
+    lastName: row.lastName,
+    email: row.email,
+    password: row.password
+  };
+
+  const publicUpdatePayload = {
+    firstName: row.firstName,
+    lastName: row.lastName,
+    email: row.email,
+    enabled: row.enabled
+  };
+
+  const legacyCreatePayload = {
+    userName: row.username,
+    firstName: row.firstName,
+    lastName: row.lastName,
+    email: row.email,
+    password: row.password
+  };
+
+  try {
+    await axios.post(peopleUrl, publicCreatePayload, requestConfig);
+    return { created: true, updated: false, endpoint: 'public-v1' };
+  } catch (publicError) {
+    if (publicError?.response?.status === 409) {
+      await axios.put(
+        `${peopleUrl}/${encodeURIComponent(row.username)}`,
+        publicUpdatePayload,
+        requestConfig
+      );
+      return { created: false, updated: true, endpoint: 'public-v1' };
+    }
+
+    const legacyCreateEndpoints = [
+      `${ALFRESCO_BASE_URL}/alfresco/s/api/people`,
+      `${ALFRESCO_BASE_URL}/alfresco/service/api/people`
+    ];
+
+    for (const endpoint of legacyCreateEndpoints) {
+      try {
+        await axios.post(endpoint, legacyCreatePayload, requestConfig);
+        return { created: true, updated: false, endpoint: endpoint.replace(ALFRESCO_BASE_URL, '') };
+      } catch (legacyError) {
+        if (legacyError?.response?.status === 409) {
+          try {
+            await axios.put(
+              `${peopleUrl}/${encodeURIComponent(row.username)}`,
+              publicUpdatePayload,
+              requestConfig
+            );
+            return { created: false, updated: true, endpoint: `${endpoint.replace(ALFRESCO_BASE_URL, '')}+public-update` };
+          } catch (updateError) {
+            throw updateError;
+          }
+        }
+      }
+    }
+
+    throw publicError;
+  }
+}
+
 async function processImport(taskId) {
   if (processingTasks.has(taskId)) {
     return;
@@ -544,6 +555,13 @@ async function processImport(taskId) {
 
     await updateImportStatus(taskId, 'PROCESSING');
     await addTaskLog(taskId, 'INFO', 'Start calling permission-service');
+    await alfrescoAuthProvider.getValidatedServiceAuth({
+      taskId,
+      purpose: 'permission import pre-check',
+      addTaskLog,
+      formatError: formatAlfrescoError
+    });
+    await addTaskLog(taskId, 'INFO', 'Alfresco authentication via credential-manager: OK');
     await safeAddAuditEvent({
       serviceName: SERVICE_PERMISSION_IMPORT,
       username: task.username,
@@ -651,27 +669,13 @@ async function processGroupMembershipImport(taskId) {
     await updateImportStatus(taskId, 'PROCESSING');
     await addTaskLog(taskId, 'INFO', 'Start processing group-member import');
 
-    const credential = await getAlfrescoServiceCredential();
-    const authHeader = getBasicAuthHeader(credential.username, credential.password);
-    await addTaskLog(taskId, 'INFO', `Using service account: ${credential.username} (${credential.source})`);
-
-    try {
-      const hasRequiredGroup = await checkUserGroupByBasicAuth(
-        credential.username,
-        authHeader,
-        GROUP_IMPORT_REQUIRED_GROUP
-      );
-      if (!hasRequiredGroup) {
-        throw new Error(
-          `Service account '${credential.username}' is missing required group '${GROUP_IMPORT_REQUIRED_GROUP}' for user/group management`
-        );
-      }
-    } catch (error) {
-      const reason = formatAlfrescoError(error, 'Cannot validate service account permissions');
-      throw new Error(
-        `Service account permission check failed: ${reason}. Please update credential-manager to use an Alfresco admin account.`
-      );
-    }
+    const { credential, authHeader } = await alfrescoAuthProvider.getValidatedServiceAuth({
+      taskId,
+      requiredGroupId: GROUP_IMPORT_REQUIRED_GROUP,
+      purpose: 'user/group management',
+      addTaskLog,
+      formatError: formatAlfrescoError
+    });
 
     const inputPath = path.join(UPLOAD_DIR, task.stored_filename);
     const rows = parseGroupImportRows(inputPath);
@@ -787,6 +791,134 @@ async function processGroupMembershipImport(taskId) {
     await safeAddAuditEvent({
       serviceName: SERVICE_GROUP_MEMBER_IMPORT,
       actionType: 'IMPORT_USER_TO_GROUP',
+      status: 'FAILED',
+      message: reason,
+      entityType: 'import_task',
+      entityId: String(taskId)
+    });
+  } finally {
+    processingTasks.delete(taskId);
+  }
+}
+
+async function processUserCsvImport(taskId) {
+  if (processingTasks.has(taskId)) {
+    return;
+  }
+
+  processingTasks.add(taskId);
+
+  try {
+    const taskResult = await pool.query(`SELECT * FROM ${IMPORTS_TABLE} WHERE id = $1`, [taskId]);
+    const task = taskResult.rows[0];
+    if (!task) {
+      return;
+    }
+
+    await updateImportStatus(taskId, 'PROCESSING');
+    await addTaskLog(taskId, 'INFO', 'Start processing user CSV import');
+
+    const { authHeader } = await alfrescoAuthProvider.getValidatedServiceAuth({
+      taskId,
+      requiredGroupId: GROUP_IMPORT_REQUIRED_GROUP,
+      purpose: 'user/group management',
+      addTaskLog,
+      formatError: formatAlfrescoError
+    });
+
+    const inputPath = path.join(UPLOAD_DIR, task.stored_filename);
+    const rows = parseUserCsvRows(inputPath);
+
+    if (!rows.length) {
+      throw new Error('No rows found in CSV');
+    }
+
+    let createdUsers = 0;
+    let updatedUsers = 0;
+    let addedGroupMemberships = 0;
+    let skippedRows = 0;
+    let failedRows = 0;
+
+    for (const row of rows) {
+      try {
+        if (!row.username || !row.firstName || !row.lastName || !row.email) {
+          skippedRows += 1;
+          await addTaskLog(taskId, 'WARN', `Line ${row.lineNo}: missing required fields (username, firstName, lastName, email)`);
+          continue;
+        }
+
+        if (!row.password) {
+          skippedRows += 1;
+          await addTaskLog(taskId, 'WARN', `Line ${row.lineNo}: missing password`);
+          continue;
+        }
+
+        const userResult = await createOrUpdateAlfrescoUser(row, authHeader);
+        if (userResult.created) {
+          createdUsers += 1;
+          await addTaskLog(taskId, 'INFO', `Line ${row.lineNo}: created user ${row.username} (${userResult.endpoint || 'unknown-endpoint'})`);
+        } else if (userResult.updated) {
+          updatedUsers += 1;
+          await addTaskLog(taskId, 'INFO', `Line ${row.lineNo}: updated user ${row.username} (${userResult.endpoint || 'unknown-endpoint'})`);
+        }
+
+        for (const groupId of row.groups) {
+          await ensureGroupExists(groupId, groupId.replace(/^GROUP_/, ''), authHeader);
+          const memberResult = await addUserToGroup(groupId, row.username, authHeader);
+          if (memberResult.added) {
+            addedGroupMemberships += 1;
+            await addTaskLog(taskId, 'INFO', `Line ${row.lineNo}: added ${row.username} to ${groupId}`);
+          }
+        }
+      } catch (error) {
+        failedRows += 1;
+        const reason = formatAlfrescoError(error, 'Cannot create/update user from CSV');
+        const detail = error?.response?.data ? JSON.stringify(error.response.data).slice(0, 800) : '';
+        await addTaskLog(taskId, 'ERROR', `Line ${row.lineNo}: ${reason}`);
+        if (detail) {
+          await addTaskLog(taskId, 'ERROR', `Line ${row.lineNo} detail: ${detail}`);
+        }
+      }
+    }
+
+    const summary = {
+      totalRows: rows.length,
+      createdUsers,
+      updatedUsers,
+      addedGroupMemberships,
+      skippedRows,
+      failedRows
+    };
+
+    const finalStatus = failedRows > 0 ? 'COMPLETED_WITH_ERRORS' : 'COMPLETED';
+
+    await pool.query(
+      `UPDATE ${IMPORTS_TABLE} SET status = $1, updated_at = $2, error_message = $3 WHERE id = $4`,
+      [finalStatus, getNowIso(), failedRows > 0 ? `Failed rows: ${failedRows}` : null, taskId]
+    );
+
+    await addTaskLog(taskId, 'INFO', `Summary: ${JSON.stringify(summary)}`);
+    await safeAddAuditEvent({
+      serviceName: SERVICE_USER_CSV_IMPORT,
+      username: task.username,
+      actionType: 'IMPORT_USERS_CSV',
+      filename: task.filename,
+      status: finalStatus,
+      message: 'User CSV import finished',
+      entityType: 'import_task',
+      entityId: String(taskId),
+      metadata: summary
+    });
+  } catch (error) {
+    const reason = error?.message || 'Unknown error';
+    await pool.query(
+      `UPDATE ${IMPORTS_TABLE} SET status = $1, error_message = $2, updated_at = $3 WHERE id = $4`,
+      ['FAILED', reason, getNowIso(), taskId]
+    );
+    await addTaskLog(taskId, 'ERROR', `User CSV import failed: ${reason}`);
+    await safeAddAuditEvent({
+      serviceName: SERVICE_USER_CSV_IMPORT,
+      actionType: 'IMPORT_USERS_CSV',
       status: 'FAILED',
       message: reason,
       entityType: 'import_task',
@@ -1070,6 +1202,61 @@ app.post('/api/group-memberships/import', authMiddleware, upload.single('file'),
     });
   } catch (error) {
     return res.status(500).json({ message: 'Cannot queue group-member import', detail: error?.message || 'Unknown error' });
+  }
+});
+
+app.post('/api/users/import-csv', authMiddleware, upload.single('file'), async (req, res) => {
+  const user = req.user?.username || req.user?.sub;
+  const file = req.file;
+
+  if (!file) {
+    return res.status(400).json({ message: 'file is required' });
+  }
+
+  const originalName = file.originalname || 'users.csv';
+  if (!originalName.toLowerCase().endsWith('.csv')) {
+    return res.status(400).json({ message: 'Only .csv files are allowed' });
+  }
+
+  const now = getNowIso();
+
+  try {
+    const inserted = await pool.query(
+      `
+      INSERT INTO ${IMPORTS_TABLE} (service_name, timestamp, username, action_type, filename, status, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      RETURNING id
+      `,
+      [SERVICE_USER_CSV_IMPORT, now, user, 'IMPORT_USERS_CSV', originalName, 'IN_PROGRESS', now, now]
+    );
+
+    const taskId = inserted.rows[0].id;
+    const storedFilename = `${taskId}_${toSafeFilename(originalName)}`;
+    const outputPath = path.join(UPLOAD_DIR, storedFilename);
+
+    await fsp.writeFile(outputPath, file.buffer);
+    await pool.query(
+      `UPDATE ${IMPORTS_TABLE} SET stored_filename = $1, updated_at = $2 WHERE id = $3`,
+      [storedFilename, getNowIso(), taskId]
+    );
+
+    await addTaskLog(taskId, 'INFO', `Upload received from user ${user}`);
+    await addTaskLog(taskId, 'INFO', `File saved as ${storedFilename}`);
+    await addTaskLog(taskId, 'INFO', 'CSV headers recommended: username,firstName,lastName,email,password,groups,enabled');
+
+    setImmediate(() => {
+      processUserCsvImport(taskId).catch((error) => {
+        console.error('Unexpected user csv import task error', error);
+      });
+    });
+
+    return res.status(202).json({
+      task_id: taskId,
+      status: 'IN_PROGRESS',
+      message: 'User CSV import task accepted'
+    });
+  } catch (error) {
+    return res.status(500).json({ message: 'Cannot queue user CSV import', detail: error?.message || 'Unknown error' });
   }
 });
 
