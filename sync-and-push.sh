@@ -8,10 +8,10 @@ BRANCH="${BRANCH:-main}"
 COMMIT_MSG="${1:-chore: sync latest beflex-support backend/frontend from workspace}"
 
 echo "[1/5] Sync backend"
-rsync -av --delete "$SRC_ROOT/allops-raku-backend/" "$DST_ROOT/beflex-support-backend/"
+rsync -av --delete "$SRC_ROOT/beflex-support-backend/" "$DST_ROOT/beflex-support-backend/"
 
 echo "[2/5] Sync frontend"
-rsync -av --delete "$SRC_ROOT/allops-raku-frontend/" "$DST_ROOT/beflex-support-frontend/"
+rsync -av --delete "$SRC_ROOT/beflex-support-frontend/" "$DST_ROOT/beflex-support-frontend/"
 
 echo "[3/5] Git status"
 cd "$DST_ROOT"
