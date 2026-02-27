@@ -5,7 +5,7 @@ Backend service for beflex-support permission Excel import.
 ## Features
 - Login against Alfresco ticket API
 - Group membership check (`GROUP_SUPPORT_WORKSPCE`)
-- Issues AllOps JWT for frontend
+- Issues support JWT for frontend
 - Accepts `.xlsx` upload and creates async task
 - Calls `permission-service` in background with retry
 - Supports group-member import from Excel (`group_id`, `group_display_name`, `user_id`, `action`)

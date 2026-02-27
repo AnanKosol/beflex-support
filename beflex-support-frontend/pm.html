@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/support/" />
+    <title>beflex-support | PM</title>
+    <link rel="stylesheet" href="styles.v3.css?v=20260225-themefix1" />
+  </head>
+  <body data-nav-page="pm-service">
+    <div class="sidebar">
+      <div class="logo-area">
+        <div class="logo-placeholder">beflex <span>support</span></div>
+      </div>
+      <div class="nav-links"></div>
+    </div>
+
+    <div class="main-content" data-session-timeout-minutes="30">
+      <div class="pm-beta-control">
+        <button class="pm-beta-toggle-btn" id="pmBetaToggleBtn">ON</button>
+        <span class="pm-beta-badge">BETA</span>
+      </div>
+
+      <section class="card" id="pmBetaOffNotice" style="display: none;">
+        <h3>PM is OFF</h3>
+        <p class="muted">โหมด BETA ปิดอยู่ ระบบจะซ่อนเมนู PM ทั้งหมด และหยุด cronjob/retention อัตโนมัติ</p>
+      </section>
+
+      <div id="pmFeatureContent">
+      <header>
+        <div class="breadcrumb">beflex Admin Support / Tools</div>
+        <h1>beflex support - PM</h1>
+      </header>
+
+      <section class="card">
+        <h3>Session</h3>
+        <div class="actions">
+          <span id="pmLoginStatus" class="status">Authenticated</span>
+          <button class="btn-secondary" id="pmLogoutBtn">Logout</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>PM Settings</h3>
+        <p class="muted">ตั้งค่าเฉพาะที่ต้องแก้บ่อย: customer, environment, schedule cron, retention days และกด manual run ได้ทันที</p>
+
+        <div class="grid">
+          <div>
+            <label for="pmCustomer">Customer</label>
+            <input id="pmCustomer" type="text" />
+          </div>
+          <div>
+            <label for="pmEnvironment">Environment</label>
+            <input id="pmEnvironment" type="text" />
+          </div>
+          <div>
+            <label for="pmRetentionDays">Retention Days</label>
+            <input id="pmRetentionDays" type="number" min="1" max="3650" />
+          </div>
+          <div>
+            <label for="pmCronExpression">Cron Expression</label>
+            <input id="pmCronExpression" type="text" placeholder="0 2 * * *" />
+          </div>
+          <div class="pm-checkbox-wrap">
+            <label class="pm-checkbox-label" for="pmCronEnabled">
+              <input id="pmCronEnabled" type="checkbox" /> Enable Cron Schedule
+            </label>
+          </div>
+        </div>
+
+        <p class="muted">Env workspace สำหรับ script ถูกอ้างอิงจาก volume: <b>./.env:/app/alfresco/.env:ro</b></p>
+
+        <div class="actions">
+          <button class="btn-primary" id="pmSaveBtn">Save Settings</button>
+          <button class="btn-primary" id="pmRunBtn">Run Manual Now</button>
+          <button class="btn-secondary" id="pmRefreshBtn">Refresh</button>
+          <span id="pmRunStatus" class="status">Idle</span>
+        </div>
+        <div id="pmMessage" class="muted"></div>
+        <div id="pmError" class="error"></div>
+      </section>
+
+      <section class="card">
+        <h3>PM Runs</h3>
+        <div class="actions" style="margin-top: 0;">
+          <label class="pm-checkbox-label" for="pmErrorsOnly">
+            <input id="pmErrorsOnly" type="checkbox" /> Show errors only
+          </label>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Start</th>
+              <th>Trigger</th>
+              <th>Status</th>
+              <th>Output</th>
+              <th>Message</th>
+            </tr>
+          </thead>
+          <tbody id="pmRunsBody"></tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <h3>Last Error Detail</h3>
+        <div id="pmErrorLogs" class="logs">No errors</div>
+      </section>
+      </div>
+    </div>
+
+    <script src="sidebar-nav.js?v=20260225-nav3"></script>
+    <script src="pm-page.js?v=20260225-pm2"></script>
+  </body>
+</html>

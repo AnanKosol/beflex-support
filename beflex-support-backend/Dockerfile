@@ -7,6 +7,7 @@ RUN npm install --omit=dev
 
 COPY server.js ./
 COPY services ./services
+COPY scripts ./scripts
 
 RUN mkdir -p /app/data /app/uploads
 

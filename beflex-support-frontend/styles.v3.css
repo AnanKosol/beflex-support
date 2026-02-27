@@ -339,6 +339,57 @@ td {
   padding-left: 20px;
 }
 
+.pm-checkbox-wrap {
+  display: flex;
+  align-items: center;
+}
+
+.pm-checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.pm-checkbox-label input[type="checkbox"] {
+  width: auto;
+  margin: 0;
+}
+
+.pm-beta-control {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.pm-beta-toggle-btn {
+  border: none;
+  border-radius: 8px;
+  padding: 11px 20px;
+  font-size: 16px;
+  font-weight: 700;
+  cursor: pointer;
+  color: #fff;
+  background: var(--primary-blue);
+}
+
+.pm-beta-toggle-btn.off {
+  background: #7c8794;
+}
+
+.pm-beta-badge {
+  display: inline-block;
+  background: #e8f5e0;
+  color: #1e7e34;
+  border: 1px solid #1e7e34;
+  border-radius: 14px;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .inline-list li {
   margin-bottom: 4px;
 }

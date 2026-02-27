@@ -9,6 +9,7 @@
     { id: 'service', href: 'service.html', label: 'Import Permission' },
     { id: 'group-service', href: 'group-service.html', label: 'Import User to Group' },
     { id: 'user-csv-service', href: 'user-csv-service.html', label: 'Create user csv' },
+    { id: 'pm-service', href: 'pm.html', label: 'PM' },
     { id: 'support-other', href: 'support-other.html', label: 'Support Other', support: true }
   ];
 

@@ -9,7 +9,9 @@ const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
 const XLSX = require('xlsx');
+const cron = require('node-cron');
 const { createAlfrescoAuthProvider } = require('./services/alfresco-auth-provider');
+const { runPmReport } = require('./scripts/pm-report');
 
 dotenv.config();
 
@@ -33,9 +35,18 @@ const PGPASSWORD = process.env.PGPASSWORD;
 const PGSSL = (process.env.PGSSL || 'false').toLowerCase() === 'true';
 const CREDENTIAL_MANAGER_URL = process.env.CREDENTIAL_MANAGER_URL || 'http://credential-manager-backend:3900';
 const CREDENTIAL_MANAGER_TOKEN = process.env.CREDENTIAL_MANAGER_TOKEN || process.env.CREDENTIAL_MANAGER_AUTH_TOKEN || '';
-const CREDENTIAL_SERVICE_NAME = process.env.CREDENTIAL_SERVICE_NAME || 'alfresco';
-const CREDENTIAL_USERNAME_ID = process.env.CREDENTIAL_USERNAME_ID || '1';
-const CREDENTIAL_PASSWORD_ID = process.env.CREDENTIAL_PASSWORD_ID || '2';
+const CREDENTIAL_SERVICE_NAME = 'alfresco';
+const CREDENTIAL_USERNAME_ID = '1';
+const CREDENTIAL_PASSWORD_ID = '2';
+const PM_FIXED_CONTENT_PATH = '/mnt/alfresco/contentstore';
+const PM_FIXED_POSTGRES_PATH = '/mnt/alfresco/postgresql-data';
+const PM_FIXED_SOLR_PATH = '/mnt/alfresco';
+const PM_FIXED_OUTPUT_DIR = '/app/pm';
+const PM_FIXED_BACKUP_DIR = '/app/pm/backup';
+const PM_FIXED_ENV_WORKSPACE = '/app/alfresco/.env';
+const PM_FIXED_ENV_POSTGRESQL = '/app/postgresql/.env';
+const PM_FIXED_WORKSPACE_SOURCE_DIR = '/app/source/beflex-workspace';
+const PM_FIXED_POSTGRES_SOURCE_DIR = '/app/source/beflex-db';
 const GROUP_IMPORT_REQUIRED_GROUP = process.env.ALLOPS_GROUP_IMPORT_REQUIRED_GROUP || 'GROUP_ALFRESCO_ADMINISTRATORS';
 
 const IMPORTS_TABLE = 'allops_raku_imports';
@@ -44,6 +55,11 @@ const AUDIT_EVENTS_TABLE = 'allops_raku_audit_events';
 const SERVICE_PERMISSION_IMPORT = 'permission-import';
 const SERVICE_GROUP_MEMBER_IMPORT = 'group-member-import';
 const SERVICE_USER_CSV_IMPORT = 'user-csv-import';
+const SERVICE_PM = 'pm-service';
+const PM_CONFIG_TABLE = 'allops_raku_pm_config';
+const PM_RUNS_TABLE = 'allops_raku_pm_runs';
+const PM_SCRIPT_TIMEOUT_MS = Number(process.env.PM_SCRIPT_TIMEOUT_MS || 30 * 60 * 1000);
+const PM_TIMEZONE = process.env.PM_TIMEZONE || 'Asia/Bangkok';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -54,6 +70,8 @@ const upload = multer({
 
 let pool;
 const processingTasks = new Set();
+let pmRunInProgress = false;
+let pmCronTask = null;
 
 function getNowIso() {
   return new Date().toISOString();
@@ -138,6 +156,283 @@ async function safeAddAuditEvent(payload) {
   }
 }
 
+function getDefaultPmConfig() {
+  return {
+    customer: process.env.PM_CUSTOMER || 'aegis',
+    environment: process.env.PM_ENVIRONMENT || 'Prod',
+    outputDir: PM_FIXED_OUTPUT_DIR,
+    contentPath: PM_FIXED_CONTENT_PATH,
+    postgresPath: PM_FIXED_POSTGRES_PATH,
+    solrPath: PM_FIXED_SOLR_PATH,
+    envWorkspace: PM_FIXED_ENV_WORKSPACE,
+    envPostgresql: PM_FIXED_ENV_POSTGRESQL,
+    workspaceSourceDir: PM_FIXED_WORKSPACE_SOURCE_DIR,
+    postgresSourceDir: PM_FIXED_POSTGRES_SOURCE_DIR,
+    backupDir: PM_FIXED_BACKUP_DIR,
+    betaEnabled: true,
+    cronEnabled: false,
+    cronExpression: '0 2 * * *',
+    retentionDays: Number(process.env.PM_RETENTION_DAYS || 30)
+  };
+}
+
+function sanitizePmConfig(rawConfig = {}, baseConfig = getDefaultPmConfig()) {
+  const value = { ...baseConfig, ...(rawConfig || {}) };
+  const asString = (input, fallback) => {
+    const text = String(input ?? fallback ?? '').trim();
+    return text || String(fallback || '').trim();
+  };
+
+  const retention = Number(value.retentionDays);
+  const betaEnabled = typeof value.betaEnabled === 'boolean' ? value.betaEnabled : Boolean(baseConfig.betaEnabled);
+
+  return {
+    customer: asString(value.customer, baseConfig.customer),
+    environment: asString(value.environment, baseConfig.environment),
+    outputDir: PM_FIXED_OUTPUT_DIR,
+    contentPath: PM_FIXED_CONTENT_PATH,
+    postgresPath: PM_FIXED_POSTGRES_PATH,
+    solrPath: PM_FIXED_SOLR_PATH,
+    envWorkspace: PM_FIXED_ENV_WORKSPACE,
+    envPostgresql: PM_FIXED_ENV_POSTGRESQL,
+    workspaceSourceDir: PM_FIXED_WORKSPACE_SOURCE_DIR,
+    postgresSourceDir: PM_FIXED_POSTGRES_SOURCE_DIR,
+    backupDir: PM_FIXED_BACKUP_DIR,
+    betaEnabled,
+    cronEnabled: betaEnabled ? Boolean(value.cronEnabled) : false,
+    cronExpression: asString(value.cronExpression, baseConfig.cronExpression),
+    retentionDays: Number.isFinite(retention) ? Math.max(1, Math.min(3650, Math.floor(retention))) : baseConfig.retentionDays
+  };
+}
+
+async function listPmFiles(folderPath) {
+  try {
+    const names = await fsp.readdir(folderPath);
+    const files = [];
+    for (const name of names) {
+      if (!/^pm_.*\.(txt|zip)$/i.test(name)) {
+        continue;
+      }
+
+      const fullPath = path.join(folderPath, name);
+      const stat = await fsp.stat(fullPath).catch(() => null);
+      if (stat?.isFile()) {
+        files.push({
+          name,
+          path: fullPath,
+          mtimeMs: stat.mtimeMs
+        });
+      }
+    }
+    return files;
+  } catch (error) {
+    return [];
+  }
+}
+
+async function runPmRetention(config) {
+  if (!config.betaEnabled) {
+    return {
+      deletedFiles: 0,
+      deletedRuns: 0
+    };
+  }
+
+  const cutoff = Date.now() - (Number(config.retentionDays || 30) * 24 * 60 * 60 * 1000);
+  let deletedFiles = 0;
+
+  for (const target of [config.outputDir, config.backupDir]) {
+    const files = await listPmFiles(target);
+    for (const file of files) {
+      if (file.mtimeMs < cutoff) {
+        await fsp.unlink(file.path).catch(() => {});
+        deletedFiles += 1;
+      }
+    }
+  }
+
+  const deletedRuns = await pool.query(
+    `DELETE FROM ${PM_RUNS_TABLE} WHERE started_at < NOW() - ($1::text || ' days')::interval`,
+    [String(config.retentionDays || 30)]
+  );
+
+  return {
+    deletedFiles,
+    deletedRuns: Number(deletedRuns.rowCount || 0)
+  };
+}
+
+async function getPmConfig() {
+  const row = await pool.query(`SELECT config, updated_at, updated_by, last_run_at FROM ${PM_CONFIG_TABLE} WHERE id = 1`);
+  const config = sanitizePmConfig(row.rows[0]?.config || getDefaultPmConfig(), getDefaultPmConfig());
+  return {
+    config,
+    updatedAt: row.rows[0]?.updated_at || null,
+    updatedBy: row.rows[0]?.updated_by || null,
+    lastRunAt: row.rows[0]?.last_run_at || null
+  };
+}
+
+async function savePmConfig(config, username) {
+  const merged = sanitizePmConfig(config, (await getPmConfig()).config);
+  await pool.query(
+    `
+    INSERT INTO ${PM_CONFIG_TABLE} (id, config, updated_at, updated_by)
+    VALUES (1, $1::jsonb, $2, $3)
+    ON CONFLICT (id)
+    DO UPDATE SET config = EXCLUDED.config, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by
+    `,
+    [JSON.stringify(merged), getNowIso(), username || null]
+  );
+  return merged;
+}
+
+async function updatePmLastRunAt() {
+  await pool.query(`UPDATE ${PM_CONFIG_TABLE} SET last_run_at = $1 WHERE id = 1`, [getNowIso()]);
+}
+
+async function refreshPmCronSchedule() {
+  if (pmCronTask) {
+    pmCronTask.stop();
+    pmCronTask.destroy();
+    pmCronTask = null;
+  }
+
+  const { config } = await getPmConfig();
+  if (!config.betaEnabled || !config.cronEnabled) {
+    return;
+  }
+
+  if (!cron.validate(config.cronExpression)) {
+    console.warn(`Invalid PM cron expression: ${config.cronExpression}`);
+    return;
+  }
+
+  pmCronTask = cron.schedule(
+    config.cronExpression,
+    () => {
+      queuePmRun('CRON', 'system').catch((error) => {
+        console.error('PM cron queue failed', error?.message || error);
+      });
+    },
+    { timezone: PM_TIMEZONE }
+  );
+}
+
+async function executePmRun(runId, triggerType, requestedBy) {
+  const startedAt = Date.now();
+  try {
+    const { config } = await getPmConfig();
+    if (!config.betaEnabled) {
+      throw new Error('PM BETA is OFF');
+    }
+
+    await fsp.mkdir(config.outputDir, { recursive: true });
+    await fsp.mkdir(config.backupDir, { recursive: true });
+
+    const result = await runPmReport(config, {
+      timeoutMs: PM_SCRIPT_TIMEOUT_MS,
+      ipIncludeRegex: process.env.PM_IP_INCLUDE_REGEX
+    });
+
+    const retentionResult = await runPmRetention(config);
+    const outputFile = result.outputFile || null;
+    const message = `PM report completed in ${Math.max(1, Math.round((Date.now() - startedAt) / 1000))}s`;
+
+    await pool.query(
+      `
+      UPDATE ${PM_RUNS_TABLE}
+      SET status = $1, finished_at = $2, output_file = $3, message = $4, stdout_tail = $5, stderr_tail = $6, deleted_files = $7, deleted_rows = $8
+      WHERE id = $9
+      `,
+      [
+        'SUCCESS',
+        getNowIso(),
+        outputFile,
+        message,
+        String(result.stdout || '').slice(-2000),
+        String(result.stderr || '').slice(-2000),
+        retentionResult.deletedFiles,
+        retentionResult.deletedRuns,
+        runId
+      ]
+    );
+
+    await updatePmLastRunAt();
+    await safeAddAuditEvent({
+      serviceName: SERVICE_PM,
+      username: requestedBy,
+      actionType: `RUN_PM_${triggerType}`,
+      filename: outputFile,
+      status: 'SUCCESS',
+      message,
+      entityType: 'pm_run',
+      entityId: String(runId),
+      metadata: {
+        output_file: outputFile,
+        retention: retentionResult
+      }
+    });
+  } catch (error) {
+    const detail = error?.stderr || error?.stdout || error?.message || 'Unknown PM run error';
+    await pool.query(
+      `
+      UPDATE ${PM_RUNS_TABLE}
+      SET status = $1, finished_at = $2, message = $3, stderr_tail = $4
+      WHERE id = $5
+      `,
+      ['FAILED', getNowIso(), String(error?.message || 'PM run failed'), String(detail).slice(-2000), runId]
+    );
+
+    await safeAddAuditEvent({
+      serviceName: SERVICE_PM,
+      username: requestedBy,
+      actionType: `RUN_PM_${triggerType}`,
+      status: 'FAILED',
+      message: String(error?.message || 'PM run failed'),
+      entityType: 'pm_run',
+      entityId: String(runId),
+      metadata: {
+        detail: String(detail).slice(-1000)
+      }
+    });
+  } finally {
+    pmRunInProgress = false;
+  }
+}
+
+async function queuePmRun(triggerType, requestedBy) {
+  const { config } = await getPmConfig();
+  if (!config.betaEnabled) {
+    throw new Error('PM BETA is OFF');
+  }
+
+  if (pmRunInProgress) {
+    throw new Error('PM job is already running');
+  }
+
+  pmRunInProgress = true;
+  const startedAt = getNowIso();
+  const inserted = await pool.query(
+    `
+    INSERT INTO ${PM_RUNS_TABLE} (started_at, trigger_type, requested_by, status, message)
+    VALUES ($1, $2, $3, $4, $5)
+    RETURNING id
+    `,
+    [startedAt, triggerType, requestedBy || null, 'IN_PROGRESS', 'PM run is in progress']
+  );
+  const runId = inserted.rows[0].id;
+
+  setImmediate(() => {
+    executePmRun(runId, triggerType, requestedBy || 'system').catch((error) => {
+      console.error('Unexpected PM run error', error);
+      pmRunInProgress = false;
+    });
+  });
+
+  return runId;
+}
+
 async function initDb() {
   await fsp.mkdir(UPLOAD_DIR, { recursive: true });
 
@@ -211,6 +506,45 @@ async function initDb() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_${AUDIT_EVENTS_TABLE}_service_time ON ${AUDIT_EVENTS_TABLE}(service_name, event_time DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_${AUDIT_EVENTS_TABLE}_username_time ON ${AUDIT_EVENTS_TABLE}(username, event_time DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_${AUDIT_EVENTS_TABLE}_status_time ON ${AUDIT_EVENTS_TABLE}(status, event_time DESC)`);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${PM_CONFIG_TABLE} (
+      id INTEGER PRIMARY KEY,
+      config JSONB NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      updated_by TEXT,
+      last_run_at TIMESTAMPTZ
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${PM_RUNS_TABLE} (
+      id BIGSERIAL PRIMARY KEY,
+      started_at TIMESTAMPTZ NOT NULL,
+      finished_at TIMESTAMPTZ,
+      trigger_type TEXT NOT NULL,
+      requested_by TEXT,
+      status TEXT NOT NULL,
+      output_file TEXT,
+      message TEXT,
+      stdout_tail TEXT,
+      stderr_tail TEXT,
+      deleted_files INTEGER NOT NULL DEFAULT 0,
+      deleted_rows INTEGER NOT NULL DEFAULT 0
+    )
+  `);
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${PM_RUNS_TABLE}_started_at ON ${PM_RUNS_TABLE}(started_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${PM_RUNS_TABLE}_status ON ${PM_RUNS_TABLE}(status)`);
+
+  await pool.query(
+    `
+    INSERT INTO ${PM_CONFIG_TABLE} (id, config, updated_at, updated_by)
+    VALUES (1, $1::jsonb, $2, $3)
+    ON CONFLICT (id) DO NOTHING
+    `,
+    [JSON.stringify(getDefaultPmConfig()), getNowIso(), 'system']
+  );
 }
 
 function createAuthHeaderWithTicket(ticket) {
@@ -1318,8 +1652,64 @@ app.get('/api/reports/audit/services', authMiddleware, async (req, res) => {
   });
 });
 
+app.get('/api/pm/config', authMiddleware, async (req, res) => {
+  const data = await getPmConfig();
+  return res.json({
+    ...data,
+    running: pmRunInProgress,
+    cronActive: Boolean(pmCronTask)
+  });
+});
+
+app.put('/api/pm/config', authMiddleware, async (req, res) => {
+  const user = req.user?.username || req.user?.sub || 'unknown';
+  const saved = await savePmConfig(req.body || {}, user);
+  await refreshPmCronSchedule();
+  return res.json({
+    config: saved,
+    message: 'PM configuration updated',
+    cronActive: Boolean(pmCronTask)
+  });
+});
+
+app.post('/api/pm/run', authMiddleware, async (req, res) => {
+  const user = req.user?.username || req.user?.sub || 'unknown';
+  try {
+    const runId = await queuePmRun('MANUAL', user);
+    return res.status(202).json({
+      run_id: runId,
+      status: 'IN_PROGRESS',
+      message: 'PM run started'
+    });
+  } catch (error) {
+    return res.status(409).json({ message: error?.message || 'PM job is already running' });
+  }
+});
+
+app.get('/api/pm/runs', authMiddleware, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 50), 200);
+  const errorsOnly = String(req.query.errors_only || 'false').toLowerCase() === 'true';
+  const result = await pool.query(
+    `
+    SELECT id, started_at, finished_at, trigger_type, requested_by, status, output_file, message, stdout_tail, stderr_tail, deleted_files, deleted_rows
+    FROM ${PM_RUNS_TABLE}
+    ${errorsOnly ? "WHERE status = 'FAILED'" : ''}
+    ORDER BY id DESC
+    LIMIT $1
+    `,
+    [limit]
+  );
+
+  return res.json({
+    items: result.rows,
+    count: result.rows.length,
+    running: pmRunInProgress
+  });
+});
+
 async function main() {
   await initDb();
+  await refreshPmCronSchedule();
   app.listen(PORT, () => {
     console.log(`beflex-support-backend listening on ${PORT}`);
   });
@@ -1331,6 +1721,10 @@ main().catch((error) => {
 });
 
 process.on('SIGTERM', async () => {
+  if (pmCronTask) {
+    pmCronTask.stop();
+    pmCronTask.destroy();
+  }
   if (pool) {
     await pool.end();
   }
