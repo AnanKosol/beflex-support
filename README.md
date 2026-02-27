@@ -1,20 +1,23 @@
-# allops-raku
+# beflex-support
 
-Repository นี้คัดเฉพาะส่วน **AllOps-Raku service** เท่านั้น (ไม่มีไฟล์ระบบอื่นจาก beflex-workspace)
+Repository นี้คัดเฉพาะส่วน **beflex-support service** เท่านั้น (ไม่มีไฟล์ระบบอื่นจาก beflex-workspace)
 
 ## Included
-- `allops-raku-backend/` (Node.js API)
-- `allops-raku-frontend/` (UI pages: login, permission import, user-to-group import, create user csv)
+- `beflex-support-backend/` (Node.js API)
+- `beflex-support-frontend/` (UI pages: login, permission import, user-to-group import, create user csv)
 - `samples/Import_user_to_group.xlsx` (ไฟล์ตัวอย่าง)
-- `docker-compose.yml` (compose เฉพาะ allops-raku)
-- `proxy/nginx.conf` (optional local proxy สำหรับทดสอบ URL `/raku`)
+- `docker-compose.yml` (compose เฉพาะ beflex-support)
+- `proxy/nginx.conf` (optional local proxy สำหรับทดสอบ URL `/support`)
 
 ## Quick start
 1. คัดลอก `.env.example` เป็น `.env`
 2. กรอกค่า Extension DB + Alfresco + credential manager
 3. รัน:
    docker compose up -d --build
-4. เปิดใช้งาน: http://localhost:8088/raku/
+4. เปิดใช้งาน: http://localhost:8088/support/
+
+หมายเหตุ frontend route:
+- หน้า frontend ของ beflex-support ถูกเสิร์ฟที่ path `/support/` ดังนั้น `index.html` ต้องใช้ `<base href="/support/">`
 
 ## Available pages
 
@@ -22,29 +25,63 @@ Repository นี้คัดเฉพาะส่วน **AllOps-Raku service**
 - `service.html` : Import Permission (.xlsx)
 - `group-service.html` : Import User to Group (.xlsx)
 - `user-csv-service.html` : Create/Update User from CSV (.csv)
+- `pm.html` : PM report (server/alfresco detail by script), schedule, retention, manual run
 - `support-other.html` : รวมลิงก์บริการที่เกี่ยวข้อง
+
+## Login policy
+
+- beflex-support login ต้องเป็นสมาชิกกลุ่ม Alfresco: `GROUP_SUPPORT_WORKSPCE` (ชื่อกลุ่ม `SUPPORT_WORKSPCE`)
 
 ## API endpoints (main)
 
-- `POST /api/allops-raku/imports` : Permission import (.xlsx)
-- `POST /api/allops-raku/group-memberships/import` : User to Group import (.xlsx)
-- `POST /api/allops-raku/users/import-csv` : Create/Update user import (.csv)
-- `GET /api/allops-raku/tasks/:id` : task status
-- `GET /api/allops-raku/tasks/:id/logs` : task logs
+- `POST /api/beflex-support/imports` : Permission import (.xlsx)
+- `POST /api/beflex-support/group-memberships/import` : User to Group import (.xlsx)
+- `POST /api/beflex-support/users/import-csv` : Create/Update user import (.csv)
+- `GET /api/beflex-support/pm/config` : Load PM config
+- `PUT /api/beflex-support/pm/config` : Update PM config
+- `POST /api/beflex-support/pm/run` : Trigger PM run manually
+- `GET /api/beflex-support/pm/runs` : PM run history (`errors_only=true` for error tier)
+- `GET /api/beflex-support/tasks/:id` : task status
+- `GET /api/beflex-support/tasks/:id/logs` : task logs
+
+PM feature summary:
+- ใช้ script `pm_bc.sh` เพื่อเก็บข้อมูล server/alfresco report
+- รองรับ cron schedule (crontab expression)
+- รองรับ manual run จาก UI
+- รองรับ retention ลบข้อมูล report/run history ตามจำนวนวันที่กำหนด
+- UI แก้ค่าเฉพาะ: `customer`, `environment`, `cron`, `retentionDays`
+- ค่า `.env` สำหรับ PM script อ้างอิงจาก volume: `./.env:/app/alfresco/.env:ro`
+
+PM/contentstore note:
+- หาก backend ต้องอ่าน contentstore โดยตรง (เช่น PM script) ต้อง mount host volume เข้า `beflex-support-backend`
+- ตัวอย่าง mount: `${DATA_VOLUME}/alf-repo-data/contentstore:/mnt/alfresco/contentstore:ro`
+
+PM host-data mounts (recommended):
+- `${DATA_VOLUME}/alf-repo-data/contentstore:/mnt/alfresco/contentstore:ro`
+- `${DATA_VOLUME}/postgresql-data:/mnt/alfresco/postgresql-data:ro`
+- `${DATA_VOLUME}/solr-data:/mnt/alfresco/solr-data:ro`
+- `./.env:/app/alfresco/.env:ro`
+
+PM environment variables for backend:
+- `PM_CONTENT_PATH=/mnt/alfresco/contentstore`
+- `PM_POSTGRES_PATH=/mnt/alfresco/postgresql-data`
+- `PM_SOLR_PATH=/mnt/alfresco/solr-data`
+- `PM_ENV_WORKSPACE=/app/alfresco/.env`
+- `PM_ENV_POSTGRESQL=/app/alfresco/.env`
 
 ## Alfresco authentication policy
 
-- ทุก service import ของ Raku (`permission-import`, `group-member-import`, `user-csv-import`) จะตรวจสอบการ authen กับ Alfresco ผ่าน credential-manager ก่อนเริ่มประมวลผล
+- ทุก service import ของ beflex-support (`permission-import`, `group-member-import`, `user-csv-import`) จะตรวจสอบการ authen กับ Alfresco ผ่าน credential-manager ก่อนเริ่มประมวลผล
 - backend ใช้ credential จาก credential-manager เท่านั้นสำหรับ service account (ไม่มี fallback ไป env credential)
 - สำหรับงานที่จัดการ user/group ระบบจะตรวจ required group (`GROUP_ALFRESCO_ADMINISTRATORS` โดย default)
 
 ### Central auth provider (for future services)
 
-- backend แยก service กลางสำหรับ auth ไว้ที่ `allops-raku-backend/services/alfresco-auth-provider.js`
+- backend แยก service กลางสำหรับ auth ไว้ที่ `beflex-support-backend/services/alfresco-auth-provider.js`
 - service ใหม่ควรเรียกผ่าน provider กลาง (`getValidatedServiceAuth`) แทนการยิง credential-manager โดยตรงใน business flow
 - benefit: ลดโค้ดซ้ำ, ปรับนโยบาย auth ครั้งเดียวมีผลกับทุก service, และบังคับมาตรฐาน log/error เดียวกัน
 
-หมายเหตุของ `POST /api/allops-raku/users/import-csv`:
+หมายเหตุของ `POST /api/beflex-support/users/import-csv`:
 - ระบบจะพยายามสร้าง user ด้วย Public API ก่อน (`/alfresco/api/-default-/public/alfresco/versions/1/people`)
 - หากเจอปัญหา compatibility บาง environment จะ fallback ไป Legacy Share API (`/alfresco/s/api/people` หรือ `/alfresco/service/api/people`)
 
@@ -61,32 +98,32 @@ Repository นี้คัดเฉพาะส่วน **AllOps-Raku service**
 สคริปต์นี้ใช้สำหรับ sync โค้ดล่าสุดจาก workspace หลักไปยัง repo export นี้ แล้ว commit/push อัตโนมัติ
 
 #### สิ่งที่สคริปต์ทำ (ตามลำดับ)
-1. `rsync` โฟลเดอร์ `allops-raku-backend/` จาก source → export repo
-2. `rsync` โฟลเดอร์ `allops-raku-frontend/` จาก source → export repo
+1. `rsync` โฟลเดอร์ `beflex-support-backend/` จาก source → export repo
+2. `rsync` โฟลเดอร์ `beflex-support-frontend/` จาก source → export repo
 3. แสดง `git status --short`
 4. ถ้ามีการเปลี่ยนแปลง: `git add` + `git commit`
 5. `git push` ไป branch ที่กำหนด
 
 #### Default paths / branch
 - `SRC_ROOT=/opt/beflex-workspace`
-- `DST_ROOT=/opt/allops-raku-export/repo`
+- `DST_ROOT=/opt/beflex-support/repo`
 - `BRANCH=main`
 
 #### การใช้งาน
 ```bash
-cd /opt/allops-raku-export/repo
+cd /opt/beflex-support/repo
 ./sync-and-push.sh
 ```
 
 กำหนด commit message เอง:
 ```bash
-./sync-and-push.sh "chore: sync raku release 0.0.2"
+./sync-and-push.sh "chore: sync beflex-support release 0.0.2"
 ```
 
 กำหนด path/branch ชั่วคราวตอนรัน:
 ```bash
 SRC_ROOT=/opt/beflex-workspace \
-DST_ROOT=/opt/allops-raku-export/repo \
+DST_ROOT=/opt/beflex-support/repo \
 BRANCH=main \
 ./sync-and-push.sh "chore: sync latest from workspace"
 ```
@@ -98,5 +135,5 @@ BRANCH=main \
 
 ## Maintenance Rule
 
-- หากมีการปรับแก้ส่วน **AllOps-Raku** (backend/frontend/config/route/page/menu) ต้องอัปเดต `README.md` ไฟล์นี้ทุกครั้งก่อน push
+- หากมีการปรับแก้ส่วน **beflex-support** (backend/frontend/config/route/page/menu) ต้องอัปเดต `README.md` ไฟล์นี้ทุกครั้งก่อน push
 - การอัปเดต README ควรครอบคลุมอย่างน้อย: สิ่งที่เปลี่ยน, วิธีใช้งาน, endpoint/page ใหม่, และผลกระทบที่ผู้ใช้งานควรรู้

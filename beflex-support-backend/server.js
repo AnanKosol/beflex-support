@@ -20,7 +20,7 @@ const PORT = Number(process.env.PORT || 3000);
 const JWT_SECRET = process.env.ALLOPS_JWT_SECRET || 'change-this-in-production';
 const JWT_EXPIRES_IN = process.env.ALLOPS_JWT_EXPIRES_IN || '8h';
 const ALFRESCO_BASE_URL = process.env.ALFRESCO_BASE_URL || 'http://alfresco:8080';
-const REQUIRED_GROUP = process.env.ALLOPS_REQUIRED_GROUP || 'GROUP_allops-raku';
+const REQUIRED_GROUP = process.env.ALLOPS_REQUIRED_GROUP || 'GROUP_SUPPORT_WORKSPCE';
 const PERMISSION_SERVICE_URL = process.env.PERMISSION_SERVICE_URL || 'http://permission-service/api/Excel/PostFile';
 const PERMISSION_TIMEOUT_MS = Number(process.env.PERMISSION_TIMEOUT_MS || 30000);
 const ALFRESCO_TIMEOUT_MS = Number(process.env.ALFRESCO_TIMEOUT_MS || 10000);
@@ -1321,7 +1321,7 @@ app.get('/api/reports/audit/services', authMiddleware, async (req, res) => {
 async function main() {
   await initDb();
   app.listen(PORT, () => {
-    console.log(`allops-raku-backend listening on ${PORT}`);
+    console.log(`beflex-support-backend listening on ${PORT}`);
   });
 }
 

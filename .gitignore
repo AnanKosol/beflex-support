@@ -3,6 +3,6 @@ node_modules/
 .compose.resolved.yml
 npm-debug.log
 .DS_Store
-allops-raku-backend/uploads/
-allops-raku-backend/data/
+beflex-support-backend/uploads/
+beflex-support-backend/data/
 data/

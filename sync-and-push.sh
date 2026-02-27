@@ -2,16 +2,16 @@
 set -euo pipefail
 
 SRC_ROOT="${SRC_ROOT:-/opt/beflex-workspace}"
-DST_ROOT="${DST_ROOT:-/opt/allops-raku-export/repo}"
+DST_ROOT="${DST_ROOT:-/opt/beflex-support/repo}"
 BRANCH="${BRANCH:-main}"
 
-COMMIT_MSG="${1:-chore: sync latest raku backend/frontend from workspace}"
+COMMIT_MSG="${1:-chore: sync latest beflex-support backend/frontend from workspace}"
 
 echo "[1/5] Sync backend"
-rsync -av --delete "$SRC_ROOT/allops-raku-backend/" "$DST_ROOT/allops-raku-backend/"
+rsync -av --delete "$SRC_ROOT/allops-raku-backend/" "$DST_ROOT/beflex-support-backend/"
 
 echo "[2/5] Sync frontend"
-rsync -av --delete "$SRC_ROOT/allops-raku-frontend/" "$DST_ROOT/allops-raku-frontend/"
+rsync -av --delete "$SRC_ROOT/allops-raku-frontend/" "$DST_ROOT/beflex-support-frontend/"
 
 echo "[3/5] Git status"
 cd "$DST_ROOT"
@@ -23,7 +23,7 @@ if [[ -z "$(git status --porcelain)" ]]; then
 fi
 
 echo "[4/5] Commit"
-git add allops-raku-backend allops-raku-frontend
+git add beflex-support-backend beflex-support-frontend
 git commit -m "$COMMIT_MSG"
 
 echo "[5/5] Push"

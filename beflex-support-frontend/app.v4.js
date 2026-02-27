@@ -1,6 +1,5 @@
-const apiBase = '/api/allops-raku';
+const apiBase = '/api/beflex-support';
 
-const loginCard = document.getElementById('loginCard');
 const importCard = document.getElementById('importCard');
 const logsCard = document.getElementById('logsCard');
 const historyCard = document.getElementById('historyCard');
@@ -10,6 +9,7 @@ const passwordInput = document.getElementById('password');
 const loginBtn = document.getElementById('loginBtn');
 const loginStatus = document.getElementById('loginStatus');
 const loginError = document.getElementById('loginError');
+const logoutBtn = document.getElementById('logoutBtn');
 
 const fileInput = document.getElementById('fileInput');
 const uploadBtn = document.getElementById('uploadBtn');
@@ -23,6 +23,27 @@ const historyBody = document.getElementById('historyBody');
 let token = '';
 let currentTaskId = null;
 let taskPolling = null;
+const pagePath = window.location.pathname;
+const onServicePage = pagePath.endsWith('/service.html') || pagePath.endsWith('/service');
+const onLoginPage = !onServicePage;
+
+function getSavedToken() {
+  return localStorage.getItem('allopsToken') || '';
+}
+
+function getSavedUsername() {
+  return localStorage.getItem('allopsUsername') || '';
+}
+
+function saveSession(nextToken, username) {
+  localStorage.setItem('allopsToken', nextToken);
+  localStorage.setItem('allopsUsername', username || '');
+}
+
+function clearSession() {
+  localStorage.removeItem('allopsToken');
+  localStorage.removeItem('allopsUsername');
+}
 
 function setTaskStatus(text, kind = 'progress') {
   taskStatus.textContent = text;
@@ -123,40 +144,7 @@ function stopPolling() {
   }
 }
 
-loginBtn.addEventListener('click', async () => {
-  loginError.textContent = '';
-  const username = usernameInput.value.trim();
-  const password = passwordInput.value;
-
-  if (!username || !password) {
-    loginError.textContent = 'กรุณากรอก username/password';
-    return;
-  }
-
-  try {
-    loginStatus.textContent = 'Authenticating...';
-    const result = await callApi('/auth/login', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username, password })
-    });
-
-    token = result.token;
-    loginStatus.textContent = `Authenticated: ${result.username}`;
-    loginStatus.className = 'status completed';
-
-    importCard.classList.remove('hidden');
-    logsCard.classList.remove('hidden');
-    historyCard.classList.remove('hidden');
-    await loadHistory();
-  } catch (error) {
-    loginStatus.textContent = 'Not authenticated';
-    loginStatus.className = 'status';
-    loginError.textContent = error.message;
-  }
-});
-
-uploadBtn.addEventListener('click', async () => {
+async function handleUpload() {
   uploadError.textContent = '';
 
   const file = fileInput.files[0];
@@ -191,13 +179,92 @@ uploadBtn.addEventListener('click', async () => {
     setTaskStatus('Failed', 'failed');
     uploadError.textContent = error.message;
   }
-});
+}
 
-refreshBtn.addEventListener('click', () => {
-  loadHistory().catch((error) => {
-    uploadError.textContent = error.message;
+function navigateToLogin() {
+  window.location.href = 'index.html';
+}
+
+function navigateToService() {
+  window.location.href = 'service.html';
+}
+
+if (loginBtn) {
+  loginBtn.addEventListener('click', async () => {
+    loginError.textContent = '';
+    const username = usernameInput.value.trim();
+    const password = passwordInput.value;
+
+    if (!username || !password) {
+      loginError.textContent = 'กรุณากรอก username/password';
+      return;
+    }
+
+    try {
+      loginStatus.textContent = 'Authenticating...';
+      const result = await callApi('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password })
+      });
+
+      token = result.token;
+      saveSession(result.token, result.username);
+      loginStatus.textContent = `Authenticated: ${result.username}`;
+      loginStatus.className = 'status completed';
+      navigateToService();
+    } catch (error) {
+      loginStatus.textContent = 'Not authenticated';
+      loginStatus.className = 'status';
+      loginError.textContent = error.message;
+    }
   });
-});
+}
+
+if (uploadBtn) {
+  uploadBtn.addEventListener('click', handleUpload);
+}
+
+if (refreshBtn) {
+  refreshBtn.addEventListener('click', () => {
+    loadHistory().catch((error) => {
+      uploadError.textContent = error.message;
+    });
+  });
+}
+
+if (logoutBtn) {
+  logoutBtn.addEventListener('click', () => {
+    stopPolling();
+    clearSession();
+    navigateToLogin();
+  });
+}
+
+if (onServicePage) {
+  token = getSavedToken();
+  if (!token) {
+    navigateToLogin();
+  } else {
+    const currentUser = getSavedUsername();
+    if (loginStatus) {
+      loginStatus.textContent = `Authenticated: ${currentUser}`;
+      loginStatus.className = 'status completed';
+    }
+    loadHistory().catch((error) => {
+      if (uploadError) {
+        uploadError.textContent = error.message;
+      }
+    });
+  }
+}
+
+if (onLoginPage) {
+  token = getSavedToken();
+  if (token) {
+    navigateToService();
+  }
+}
 
 window.addEventListener('beforeunload', () => {
   stopPolling();

@@ -1,4 +1,4 @@
-const apiBase = '/api/allops-raku';
+const apiBase = '/api/beflex-support';
 
 const loginCard = document.getElementById('loginCard');
 const importCard = document.getElementById('importCard');

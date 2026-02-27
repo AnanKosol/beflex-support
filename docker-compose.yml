@@ -1,15 +1,15 @@
 services:
-  allops-raku-backend:
+  beflex-support-backend:
     build:
-      context: ./allops-raku-backend
-    container_name: allops-raku-backend
+      context: ./beflex-support-backend
+    container_name: beflex-support-backend
     restart: always
     environment:
       - TZ=Asia/Bangkok
       - PORT=3000
       - ALFRESCO_BASE_URL=${ALFRESCO_BASE_URL}
       - PERMISSION_SERVICE_URL=${PERMISSION_SERVICE_URL}
-      - ALLOPS_REQUIRED_GROUP=GROUP_allops-raku
+      - ALLOPS_REQUIRED_GROUP=GROUP_SUPPORT_WORKSPCE
       - ALLOPS_JWT_SECRET=${ALLOPS_JWT_SECRET}
       - ALLOPS_UPLOAD_DIR=/app/uploads
       - ALFRESCO_TIMEOUT_MS=10000
@@ -27,21 +27,21 @@ services:
     volumes:
       - ./data/uploads:/app/uploads
 
-  allops-raku-frontend:
+  beflex-support-frontend:
     build:
-      context: ./allops-raku-frontend
-    container_name: allops-raku-frontend
+      context: ./beflex-support-frontend
+    container_name: beflex-support-frontend
     restart: always
     depends_on:
-      - allops-raku-backend
+      - beflex-support-backend
 
-  raku-proxy:
+  beflex-support-proxy:
     image: nginx:1.25.4
-    container_name: allops-raku-proxy
+    container_name: beflex-support-proxy
     restart: always
     depends_on:
-      - allops-raku-frontend
-      - allops-raku-backend
+      - beflex-support-frontend
+      - beflex-support-backend
     ports:
       - "8088:80"
     volumes:

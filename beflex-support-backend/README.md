@@ -1,10 +1,10 @@
-# allops-raku-backend
+# beflex-support-backend
 
-Backend service for AllOps-Raku permission Excel import.
+Backend service for beflex-support permission Excel import.
 
 ## Features
 - Login against Alfresco ticket API
-- Group membership check (`GROUP_allops-raku`)
+- Group membership check (`GROUP_SUPPORT_WORKSPCE`)
 - Issues AllOps JWT for frontend
 - Accepts `.xlsx` upload and creates async task
 - Calls `permission-service` in background with retry
@@ -15,7 +15,7 @@ Backend service for AllOps-Raku permission Excel import.
 
 ## Database
 - Uses PostgreSQL from environment: `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`
-- Uses shared tables for all AllOps-Raku services (no new table per service):
+- Uses shared tables for all beflex-support services (no new table per service):
 	- `allops_raku_imports`
 	- `allops_raku_task_logs`
 	- `allops_raku_audit_events`

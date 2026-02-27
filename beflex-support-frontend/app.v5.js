@@ -1,4 +1,4 @@
-const apiBase = '/api/allops-raku';
+const apiBase = '/api/beflex-support';
 const mainContent = document.querySelector('.main-content');
 
 const usernameInput = document.getElementById('username');
@@ -24,12 +24,28 @@ const configuredPageTitle = mainContent?.dataset?.pageTitle;
 const configuredPageDesc = mainContent?.dataset?.pageDesc;
 const configuredUploadLabel = mainContent?.dataset?.uploadLabel;
 const configuredHistoryTitle = mainContent?.dataset?.historyTitle;
+const configuredSessionTimeoutMinutes = Number(mainContent?.dataset?.sessionTimeoutMinutes || 30);
+const acceptedExtensions = (fileInput?.getAttribute('accept') || '.xlsx')
+  .split(',')
+  .map((item) => item.trim().toLowerCase())
+  .filter((item) => item.startsWith('.'));
 
 let token = '';
 let currentTaskId = null;
 let taskPolling = null;
+let idleTimer = null;
+const idleTimeoutMinutes = Number.isFinite(configuredSessionTimeoutMinutes) && configuredSessionTimeoutMinutes > 0
+  ? configuredSessionTimeoutMinutes
+  : 30;
+const idleTimeoutMs = idleTimeoutMinutes * 60 * 1000;
+const activityEvents = ['click', 'keydown', 'touchstart', 'scroll', 'focus'];
 const pagePath = window.location.pathname;
-const onServicePage = pagePath.endsWith('/service.html') || pagePath.endsWith('/service') || pagePath.endsWith('/group-service.html') || pagePath.endsWith('/group-service');
+const onServicePage = pagePath.endsWith('/service.html')
+  || pagePath.endsWith('/service')
+  || pagePath.endsWith('/group-service.html')
+  || pagePath.endsWith('/group-service')
+  || pagePath.endsWith('/user-csv-service.html')
+  || pagePath.endsWith('/user-csv-service');
 const onLoginPage = !onServicePage;
 
 function getSavedToken() {
@@ -87,6 +103,15 @@ async function callApi(path, options = {}) {
   });
 
   const data = await response.json().catch(() => ({}));
+
+  if (response.status === 401 && onServicePage) {
+    clearSession();
+    stopPolling();
+    stopIdleSessionTimeout();
+    sessionStorage.setItem('allopsSessionExpired', '1');
+    navigateToLogin();
+    throw new Error('Session expired. Please login again.');
+  }
 
   if (!response.ok) {
     throw new Error(data.message || `Request failed: ${response.status}`);
@@ -148,6 +173,10 @@ async function loadTaskStatus(taskId) {
     setTaskStatus('Completed', 'completed');
     stopPolling();
     await loadHistory();
+  } else if (task.status === 'COMPLETED_WITH_ERRORS') {
+    setTaskStatus('Completed with errors', 'failed');
+    stopPolling();
+    await loadHistory();
   } else if (task.status === 'FAILED') {
     setTaskStatus('Failed', 'failed');
     stopPolling();
@@ -162,9 +191,6 @@ function startPolling(taskId) {
   taskPolling = setInterval(() => {
     loadTaskStatus(taskId).catch((error) => {
       uploadError.textContent = error.message;
-      if (logsBox) {
-        logsBox.textContent = `[ERROR] ${error.message}`;
-      }
     });
   }, 3000);
 }
@@ -173,6 +199,53 @@ function stopPolling() {
   if (taskPolling) {
     clearInterval(taskPolling);
     taskPolling = null;
+  }
+}
+
+function stopIdleSessionTimeout() {
+  if (idleTimer) {
+    clearTimeout(idleTimer);
+    idleTimer = null;
+  }
+}
+
+function onIdleTimeout() {
+  stopPolling();
+  stopIdleSessionTimeout();
+  clearSession();
+  sessionStorage.setItem('allopsSessionExpired', '1');
+  navigateToLogin();
+}
+
+function resetIdleSessionTimeout() {
+  if (!onServicePage || !token) {
+    return;
+  }
+
+  stopIdleSessionTimeout();
+  idleTimer = setTimeout(onIdleTimeout, idleTimeoutMs);
+}
+
+function startIdleSessionTimeout() {
+  if (!onServicePage) {
+    return;
+  }
+
+  activityEvents.forEach((eventName) => {
+    window.addEventListener(eventName, resetIdleSessionTimeout, { passive: true });
+  });
+
+  resetIdleSessionTimeout();
+}
+
+function showSessionExpiredNoticeOnLogin() {
+  if (!onLoginPage || !loginError) {
+    return;
+  }
+
+  if (sessionStorage.getItem('allopsSessionExpired') === '1') {
+    loginError.textContent = `Session timeout (${idleTimeoutMinutes} นาที) กรุณาเข้าสู่ระบบใหม่`;
+    sessionStorage.removeItem('allopsSessionExpired');
   }
 }
 
@@ -188,8 +261,14 @@ async function handleUpload() {
     return;
   }
 
-  if (!file.name.toLowerCase().endsWith('.xlsx')) {
-    uploadError.textContent = 'รองรับเฉพาะไฟล์ .xlsx เท่านั้น';
+  const lowerName = file.name.toLowerCase();
+  const hasAllowedExtension = acceptedExtensions.length
+    ? acceptedExtensions.some((ext) => lowerName.endsWith(ext))
+    : true;
+
+  if (!hasAllowedExtension) {
+    const extensionLabel = acceptedExtensions.length ? acceptedExtensions.join(', ') : 'ที่ระบบรองรับ';
+    uploadError.textContent = `รองรับเฉพาะไฟล์ ${extensionLabel} เท่านั้น`;
     return;
   }
 
@@ -217,12 +296,6 @@ async function handleUpload() {
   } catch (error) {
     setTaskStatus('Failed', 'failed');
     uploadError.textContent = error.message;
-    if (taskMeta && currentTaskId) {
-      taskMeta.textContent = `Task #${currentTaskId}`;
-    }
-    if (logsBox) {
-      logsBox.textContent = `[ERROR] ${error.message}`;
-    }
   }
 }
 
@@ -265,7 +338,35 @@ function applyPageConfig() {
   }
 }
 
+function initGuideToggles() {
+  const toggles = document.querySelectorAll('.guide-toggle[data-target]');
+  if (!toggles.length) {
+    return;
+  }
+
+  toggles.forEach((button) => {
+    const targetId = button.getAttribute('data-target');
+    const content = targetId ? document.getElementById(targetId) : null;
+    if (!content) {
+      return;
+    }
+
+    content.classList.add('collapsed');
+    button.setAttribute('aria-expanded', 'false');
+    button.textContent = 'แสดงขั้นตอนการใช้งาน';
+
+    button.addEventListener('click', () => {
+      const isExpanded = button.getAttribute('aria-expanded') === 'true';
+      const nextExpanded = !isExpanded;
+      button.setAttribute('aria-expanded', String(nextExpanded));
+      button.textContent = nextExpanded ? 'ซ่อนขั้นตอนการใช้งาน' : 'แสดงขั้นตอนการใช้งาน';
+      content.classList.toggle('collapsed', !nextExpanded);
+    });
+  });
+}
+
 applyPageConfig();
+initGuideToggles();
 
 if (loginBtn) {
   loginBtn.addEventListener('click', async () => {
@@ -314,6 +415,7 @@ if (refreshBtn) {
 if (logoutBtn) {
   logoutBtn.addEventListener('click', () => {
     stopPolling();
+    stopIdleSessionTimeout();
     clearSession();
     navigateToLogin();
   });
@@ -324,6 +426,7 @@ if (onServicePage) {
   if (!token) {
     navigateToLogin();
   } else {
+    startIdleSessionTimeout();
     const currentUser = getSavedUsername();
     if (loginStatus) {
       loginStatus.textContent = `Authenticated: ${currentUser}`;
@@ -338,6 +441,7 @@ if (onServicePage) {
 }
 
 if (onLoginPage) {
+  showSessionExpiredNoticeOnLogin();
   token = getSavedToken();
   if (token) {
     navigateToService();
@@ -346,4 +450,5 @@ if (onLoginPage) {
 
 window.addEventListener('beforeunload', () => {
   stopPolling();
+  stopIdleSessionTimeout();
 });

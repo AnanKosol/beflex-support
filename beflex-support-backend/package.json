@@ -1,7 +1,7 @@
 {
-  "name": "allops-raku-backend",
+  "name": "beflex-support-backend",
   "version": "1.0.0",
-  "description": "AllOps-Raku backend service",
+  "description": "beflex-support backend service",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
