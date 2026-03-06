@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/support/" />
     <title>beflex-support | PM</title>
-    <link rel="stylesheet" href="styles.v3.css?v=20260225-themefix1" />
+    <link rel="stylesheet" href="styles.v3.css?v=20260302-pm-center-fix1" />
   </head>
   <body data-nav-page="pm-service">
     <div class="sidebar">
@@ -16,46 +16,30 @@
     </div>
 
     <div class="main-content" data-session-timeout-minutes="30">
-      <div class="pm-beta-control">
-        <button class="pm-beta-toggle-btn" id="pmBetaToggleBtn">ON</button>
-        <span class="pm-beta-badge">BETA</span>
-      </div>
-
-      <section class="card" id="pmBetaOffNotice" style="display: none;">
-        <h3>PM is OFF</h3>
-        <p class="muted">โหมด BETA ปิดอยู่ ระบบจะซ่อนเมนู PM ทั้งหมด และหยุด cronjob/retention อัตโนมัติ</p>
-      </section>
-
-      <div id="pmFeatureContent">
       <header>
-        <div class="breadcrumb">beflex Admin Support / Tools</div>
-        <h1>beflex support - PM</h1>
+        <div class="breadcrumb">beflex Admin Support / PM</div>
+        <h1>PM</h1>
       </header>
 
-      <section class="card">
-        <h3>Session</h3>
-        <div class="actions">
-          <span id="pmLoginStatus" class="status">Authenticated</span>
-          <button class="btn-secondary" id="pmLogoutBtn">Logout</button>
+      <section class="card pm-center-card">
+        <div class="pm-center-header">
+          <button class="pm-center-toggle" id="pmCenterToggleBtn">ON</button>
+          <span class="muted">ระบบ Center สำหรับเก็บข้อมูลเพื่อทำสรุป PM Report</span>
+          <span id="pmTopStatus" class="status">Idle</span>
+          <button class="btn-secondary" id="pmLogoutBtn" type="button">Logout</button>
         </div>
       </section>
 
-      <section class="card">
-        <h3>PM Settings</h3>
-        <p class="muted">ตั้งค่าเฉพาะที่ต้องแก้บ่อย: customer, environment, schedule cron, retention days และกด manual run ได้ทันที</p>
-
+      <section class="card" id="pmDetailsCard">
+        <h3>Details Configuration</h3>
         <div class="grid">
           <div>
-            <label for="pmCustomer">Customer</label>
+            <label for="pmCustomer">Customer code</label>
             <input id="pmCustomer" type="text" />
           </div>
           <div>
-            <label for="pmEnvironment">Environment</label>
-            <input id="pmEnvironment" type="text" />
-          </div>
-          <div>
-            <label for="pmRetentionDays">Retention Days</label>
-            <input id="pmRetentionDays" type="number" min="1" max="3650" />
+            <label for="pmEnvironment">ENV</label>
+            <input id="pmEnvironment" type="text" placeholder="PROD / UAT / TEST / POC" />
           </div>
           <div>
             <label for="pmCronExpression">Cron Expression</label>
@@ -63,53 +47,112 @@
           </div>
           <div class="pm-checkbox-wrap">
             <label class="pm-checkbox-label" for="pmCronEnabled">
-              <input id="pmCronEnabled" type="checkbox" /> Enable Cron Schedule
+              <input id="pmCronEnabled" type="checkbox" /> Cron schedule
             </label>
+          </div>
+          <div>
+            <label for="pmRetentionDays">Retention Days</label>
+            <select id="pmRetentionDays">
+              <option value="7">7</option>
+              <option value="14">14</option>
+              <option value="30" selected>30</option>
+              <option value="60">60</option>
+              <option value="90">90</option>
+              <option value="180">180</option>
+              <option value="365">365</option>
+            </select>
           </div>
         </div>
 
-        <p class="muted">Env workspace สำหรับ script ถูกอ้างอิงจาก volume: <b>./.env:/app/alfresco/.env:ro</b></p>
-
         <div class="actions">
-          <button class="btn-primary" id="pmSaveBtn">Save Settings</button>
-          <button class="btn-primary" id="pmRunBtn">Run Manual Now</button>
-          <button class="btn-secondary" id="pmRefreshBtn">Refresh</button>
-          <span id="pmRunStatus" class="status">Idle</span>
+          <button class="btn-primary" id="pmEditDetailsBtn" type="button">Edit details</button>
+          <button class="btn-primary" id="pmStartPmBtn" type="button">Start PM</button>
+          <span id="pmDetailsStatus" class="status">Read only</span>
         </div>
-        <div id="pmMessage" class="muted"></div>
-        <div id="pmError" class="error"></div>
+        <div id="pmDetailsError" class="error"></div>
       </section>
 
-      <section class="card">
-        <h3>PM Runs</h3>
+      <section class="card" id="pmServerCard">
+        <h3>Server &amp; Application Setting</h3>
         <div class="actions" style="margin-top: 0;">
-          <label class="pm-checkbox-label" for="pmErrorsOnly">
-            <input id="pmErrorsOnly" type="checkbox" /> Show errors only
-          </label>
+          <label for="pmServerIp" style="margin: 0; min-width: 80px;">Server IP</label>
+          <input id="pmServerIp" type="text" placeholder="10.10.10.20" />
+          <button class="btn-primary" id="pmAddServerBtn" type="button">Add Server</button>
         </div>
+
         <table>
           <thead>
             <tr>
-              <th>ID</th>
-              <th>Start</th>
-              <th>Trigger</th>
+              <th>ENV</th>
+              <th>Server ID</th>
+              <th>Server name</th>
+              <th>Server IP</th>
               <th>Status</th>
-              <th>Output</th>
-              <th>Message</th>
+              <th>Action</th>
             </tr>
           </thead>
-          <tbody id="pmRunsBody"></tbody>
+          <tbody id="pmServersBody"></tbody>
         </table>
+
+        <div class="actions">
+          <button class="btn-secondary" id="pmStartAllBtn" type="button">Start All</button>
+          <button class="btn-secondary" id="pmPauseAllBtn" type="button">Pause All</button>
+          <span id="pmServerStatus" class="status">Idle</span>
+        </div>
+        <div id="pmServerError" class="error"></div>
       </section>
 
-      <section class="card">
-        <h3>Last Error Detail</h3>
-        <div id="pmErrorLogs" class="logs">No errors</div>
+      <section class="card" id="pmReportCard">
+        <h3>Report PM</h3>
+        <p class="muted">รายการที่มีการ PM แสดงรายการล่าสุด</p>
+
+        <div class="actions" style="margin-top: 0;">
+          <select id="pmReportServerFilter"></select>
+          <button class="btn-secondary" id="pmSearchServerBtn" type="button">Search Server</button>
+          <button class="btn-secondary" id="pmClearSearchBtn" type="button">Clear</button>
+        </div>
+
+        <table>
+          <thead>
+            <tr>
+              <th>NO</th>
+              <th>Server name</th>
+              <th>PM file data</th>
+              <th>PM Date</th>
+              <th>Status</th>
+              <th>Message</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="pmReportsBody"></tbody>
+        </table>
+
+        <div class="actions">
+          <label for="pmPageSize" style="margin: 0;">PAGING</label>
+          <select id="pmPageSize">
+            <option value="30" selected>30</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+          <button class="btn-secondary" id="pmPrevPageBtn" type="button">Prev</button>
+          <button class="btn-secondary" id="pmNextPageBtn" type="button">Next</button>
+          <span id="pmPagingLabel" class="status">Page 1</span>
+        </div>
+        <div id="pmReportError" class="error"></div>
       </section>
+
+      <div class="pm-message-modal hidden" id="pmMessageModal">
+        <div class="pm-message-dialog">
+          <h3>Message Detail</h3>
+          <div class="logs" id="pmMessageDetail"></div>
+          <div class="actions">
+            <button class="btn-primary" id="pmMessageCloseBtn" type="button">Close</button>
+          </div>
+        </div>
       </div>
     </div>
 
-    <script src="sidebar-nav.js?v=20260225-nav3"></script>
-    <script src="pm-page.js?v=20260225-pm2"></script>
+    <script src="sidebar-nav.js?v=20260306-nav8"></script>
+    <script src="pm-page.js?v=20260302-pm-center-fix2"></script>
   </body>
 </html>

@@ -1,31 +1,57 @@
 const apiBase = '/api/beflex-support';
-const pmLoginStatus = document.getElementById('pmLoginStatus');
-const pmLogoutBtn = document.getElementById('pmLogoutBtn');
-const pmSaveBtn = document.getElementById('pmSaveBtn');
-const pmRunBtn = document.getElementById('pmRunBtn');
-const pmRefreshBtn = document.getElementById('pmRefreshBtn');
-const pmRunStatus = document.getElementById('pmRunStatus');
-const pmMessage = document.getElementById('pmMessage');
-const pmError = document.getElementById('pmError');
-const pmRunsBody = document.getElementById('pmRunsBody');
-const pmErrorLogs = document.getElementById('pmErrorLogs');
-const pmErrorsOnly = document.getElementById('pmErrorsOnly');
-const pmBetaToggleBtn = document.getElementById('pmBetaToggleBtn');
-const pmFeatureContent = document.getElementById('pmFeatureContent');
-const pmBetaOffNotice = document.getElementById('pmBetaOffNotice');
 
-const fields = {
+const elements = {
+  topStatus: document.getElementById('pmTopStatus'),
+  logoutBtn: document.getElementById('pmLogoutBtn'),
+  centerToggleBtn: document.getElementById('pmCenterToggleBtn'),
+
   customer: document.getElementById('pmCustomer'),
   environment: document.getElementById('pmEnvironment'),
-  retentionDays: document.getElementById('pmRetentionDays'),
   cronExpression: document.getElementById('pmCronExpression'),
-  cronEnabled: document.getElementById('pmCronEnabled')
+  cronEnabled: document.getElementById('pmCronEnabled'),
+  retentionDays: document.getElementById('pmRetentionDays'),
+  editDetailsBtn: document.getElementById('pmEditDetailsBtn'),
+  startPmBtn: document.getElementById('pmStartPmBtn'),
+  detailsStatus: document.getElementById('pmDetailsStatus'),
+  detailsError: document.getElementById('pmDetailsError'),
+  detailsCard: document.getElementById('pmDetailsCard'),
+
+  serverIp: document.getElementById('pmServerIp'),
+  addServerBtn: document.getElementById('pmAddServerBtn'),
+  serversBody: document.getElementById('pmServersBody'),
+  startAllBtn: document.getElementById('pmStartAllBtn'),
+  pauseAllBtn: document.getElementById('pmPauseAllBtn'),
+  serverStatus: document.getElementById('pmServerStatus'),
+  serverError: document.getElementById('pmServerError'),
+  serverCard: document.getElementById('pmServerCard'),
+
+  reportServerFilter: document.getElementById('pmReportServerFilter'),
+  searchServerBtn: document.getElementById('pmSearchServerBtn'),
+  clearSearchBtn: document.getElementById('pmClearSearchBtn'),
+  reportsBody: document.getElementById('pmReportsBody'),
+  pageSize: document.getElementById('pmPageSize'),
+  prevPageBtn: document.getElementById('pmPrevPageBtn'),
+  nextPageBtn: document.getElementById('pmNextPageBtn'),
+  pagingLabel: document.getElementById('pmPagingLabel'),
+  reportError: document.getElementById('pmReportError'),
+  reportCard: document.getElementById('pmReportCard'),
+
+  messageModal: document.getElementById('pmMessageModal'),
+  messageDetail: document.getElementById('pmMessageDetail'),
+  messageCloseBtn: document.getElementById('pmMessageCloseBtn')
 };
 
 let token = localStorage.getItem('allopsToken') || '';
-let poller = null;
 let idleTimer = null;
-let pmBetaEnabled = true;
+let poller = null;
+let detailsEditMode = false;
+let pmEnabled = true;
+let servers = [];
+let reports = [];
+let reportTotal = 0;
+let currentPage = 1;
+let currentServerId = null;
+
 const idleTimeoutMinutes = Number(document.querySelector('.main-content')?.dataset?.sessionTimeoutMinutes || 30);
 const idleTimeoutMs = idleTimeoutMinutes * 60 * 1000;
 const activityEvents = ['click', 'keydown', 'touchstart', 'scroll', 'focus'];
@@ -39,12 +65,54 @@ function clearSession() {
   localStorage.removeItem('allopsUsername');
 }
 
-function setStatus(text, kind = 'progress') {
-  pmRunStatus.textContent = text;
-  pmRunStatus.className = 'status';
-  if (kind === 'completed') pmRunStatus.classList.add('completed');
-  if (kind === 'failed') pmRunStatus.classList.add('failed');
-  if (kind === 'progress') pmRunStatus.classList.add('progress');
+function setStatus(target, text, kind = '') {
+  if (!target) {
+    return;
+  }
+  target.textContent = text;
+  target.className = 'status';
+  if (kind) {
+    target.classList.add(kind);
+  }
+}
+
+function setError(target, message) {
+  if (!target) {
+    return;
+  }
+  target.textContent = message || '';
+}
+
+function formatTime(value) {
+  if (!value) {
+    return '-';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+  const bangkokDate = new Date(date.getTime() + (7 * 60 * 60 * 1000));
+  return `${bangkokDate.toISOString().slice(0, 19).replace('T', ' ')} +07`;
+}
+
+function formatDateToken(value) {
+  if (!value) {
+    return 'unknown-date';
+  }
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return 'unknown-date';
+  }
+  return date.toISOString().slice(0, 10);
+}
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
 }
 
 async function callApi(path, options = {}) {
@@ -76,203 +144,488 @@ async function callApi(path, options = {}) {
   return data;
 }
 
-function formatTime(value) {
-  if (!value) {
-    return '-';
+async function downloadWithAuth(path, fallbackName) {
+  const headers = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
   }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
+
+  const response = await fetch(`${apiBase}${path}`, { headers });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.message || `Download failed: ${response.status}`);
   }
-  const bangkokDate = new Date(date.getTime() + (7 * 60 * 60 * 1000));
-  return `${bangkokDate.toISOString().slice(0, 19).replace('T', ' ')} +07`;
+
+  const disposition = response.headers.get('content-disposition') || '';
+  const matched = disposition.match(/filename="([^"]+)"/i);
+  const filename = matched?.[1] || fallbackName;
+
+  const blob = await response.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(objectUrl);
 }
 
-function fillConfig(config) {
-  applyBetaState(config.betaEnabled !== false);
-
-  Object.entries(fields).forEach(([key, input]) => {
-    if (!input) {
-      return;
-    }
-    if (input.type === 'checkbox') {
-      input.checked = Boolean(config[key]);
-    } else {
-      input.value = config[key] ?? '';
-    }
-  });
-}
-
-function readConfigFromForm() {
+function readConfigForm() {
   return {
-    customer: fields.customer.value.trim(),
-    environment: fields.environment.value.trim(),
-    retentionDays: Number(fields.retentionDays.value || 30),
-    cronExpression: fields.cronExpression.value.trim(),
-    cronEnabled: pmBetaEnabled ? fields.cronEnabled.checked : false,
-    betaEnabled: pmBetaEnabled
+    customer: elements.customer.value.trim(),
+    environment: elements.environment.value.trim(),
+    cronExpression: elements.cronExpression.value.trim(),
+    cronEnabled: pmEnabled ? elements.cronEnabled.checked : false,
+    retentionDays: Number(elements.retentionDays.value || 30),
+    betaEnabled: pmEnabled
   };
 }
 
-function applyBetaState(enabled) {
-  pmBetaEnabled = Boolean(enabled);
-
-  if (pmBetaToggleBtn) {
-    pmBetaToggleBtn.textContent = pmBetaEnabled ? 'ON' : 'OFF';
-    pmBetaToggleBtn.classList.toggle('off', !pmBetaEnabled);
-  }
-
-  if (pmFeatureContent) {
-    pmFeatureContent.style.display = pmBetaEnabled ? '' : 'none';
-  }
-
-  if (pmBetaOffNotice) {
-    pmBetaOffNotice.style.display = pmBetaEnabled ? 'none' : '';
-  }
+function fillConfigForm(config = {}) {
+  elements.customer.value = config.customer || '';
+  elements.environment.value = config.environment || '';
+  elements.cronExpression.value = config.cronExpression || '';
+  elements.cronEnabled.checked = Boolean(config.cronEnabled);
+  elements.retentionDays.value = String(config.retentionDays || 30);
 }
 
-function renderRuns(items) {
-  pmRunsBody.innerHTML = '';
+function applyDetailsEditable(editable) {
+  detailsEditMode = Boolean(editable);
+  elements.customer.disabled = !editable;
+  elements.environment.disabled = !editable;
+  elements.cronExpression.disabled = !editable;
+  elements.cronEnabled.disabled = !editable;
+  elements.retentionDays.disabled = !editable;
 
-  if (!items.length) {
-    pmRunsBody.innerHTML = '<tr><td colspan="6">No records</td></tr>';
-    pmErrorLogs.textContent = 'No errors';
+  elements.editDetailsBtn.textContent = editable ? 'Save details' : 'Edit details';
+  setStatus(elements.detailsStatus, editable ? 'Editing' : 'Read only', editable ? 'progress' : 'completed');
+}
+
+function applyCenterState(enabled) {
+  pmEnabled = Boolean(enabled);
+  elements.centerToggleBtn.textContent = pmEnabled ? 'ON' : 'OFF';
+  elements.centerToggleBtn.classList.toggle('off', !pmEnabled);
+
+  const opDisabled = !pmEnabled;
+  elements.startPmBtn.disabled = opDisabled;
+  elements.addServerBtn.disabled = opDisabled;
+  elements.startAllBtn.disabled = opDisabled;
+  elements.pauseAllBtn.disabled = opDisabled;
+  elements.editDetailsBtn.disabled = opDisabled;
+
+  [elements.detailsCard, elements.serverCard, elements.reportCard].forEach((card) => {
+    if (!card) {
+      return;
+    }
+    card.classList.toggle('hidden', !pmEnabled);
+  });
+
+  if (!pmEnabled) {
+    detailsEditMode = false;
+    elements.customer.value = '';
+    elements.environment.value = '';
+    elements.cronExpression.value = '';
+    elements.cronEnabled.checked = false;
+    elements.retentionDays.value = '30';
+    elements.serverIp.value = '';
+    servers = [];
+    reports = [];
+    reportTotal = 0;
+    currentPage = 1;
+    currentServerId = null;
+    renderServers();
+    renderServerFilter();
+    renderReports();
+    closeMessageModal();
+    stopPolling();
+  }
+
+  setStatus(elements.topStatus, pmEnabled ? 'PM ON' : 'PM OFF', pmEnabled ? 'completed' : 'failed');
+}
+
+function renderServers() {
+  elements.serversBody.innerHTML = '';
+
+  if (!servers.length) {
+    elements.serversBody.innerHTML = '<tr><td colspan="6">No server</td></tr>';
     return;
   }
 
-  let latestError = null;
+  for (const item of servers) {
+    const tr = document.createElement('tr');
+    const actionLabel = item.pm_enabled ? 'Pause' : 'Start';
 
-  for (const row of items) {
+    tr.innerHTML = `
+      <td>${escapeHtml(item.env || '-')}</td>
+      <td>${item.server_id}</td>
+      <td>${escapeHtml(item.server_name || '-')}</td>
+      <td>${escapeHtml(item.server_ip || '-')}</td>
+      <td>${escapeHtml(item.status || '-')}</td>
+      <td>
+        <button class="btn-secondary pm-mini-btn" data-server-action="toggle" data-server-id="${item.server_id}" data-server-enabled="${item.pm_enabled ? '1' : '0'}">${actionLabel}</button>
+        <button class="btn-secondary pm-mini-btn" data-server-action="delete" data-server-id="${item.server_id}">Delete</button>
+      </td>
+    `;
+
+    elements.serversBody.appendChild(tr);
+  }
+}
+
+function renderServerFilter() {
+  const selected = elements.reportServerFilter.value;
+  elements.reportServerFilter.innerHTML = '';
+
+  const allOption = document.createElement('option');
+  allOption.value = '';
+  allOption.textContent = 'All Server';
+  elements.reportServerFilter.appendChild(allOption);
+
+  for (const item of servers) {
+    const option = document.createElement('option');
+    option.value = String(item.server_id);
+    option.textContent = item.server_name || item.server_key || `Server ${item.server_id}`;
+    elements.reportServerFilter.appendChild(option);
+  }
+
+  if (selected && servers.some((item) => String(item.server_id) === selected)) {
+    elements.reportServerFilter.value = selected;
+  }
+}
+
+function buildReportFilename(row) {
+  const customerCode = row.customer_code || 'customer';
+  const env = row.env || 'env';
+  const serverName = row.server_name || row.server_key || 'server';
+  const dateToken = formatDateToken(row.pm_date);
+  return `${customerCode}-${env}-${serverName}-${dateToken}`;
+}
+
+function renderReports() {
+  elements.reportsBody.innerHTML = '';
+
+  if (!reports.length) {
+    elements.reportsBody.innerHTML = '<tr><td colspan="7">No report data</td></tr>';
+    return;
+  }
+
+  const baseNo = ((currentPage - 1) * Number(elements.pageSize.value || 30));
+  for (let i = 0; i < reports.length; i += 1) {
+    const row = reports[i];
+    const no = baseNo + i + 1;
+    const fileBase = buildReportFilename(row);
+    const message = row.error_detail || (row.status === 'SUCCESS' ? 'OK' : row.status || '-');
+    const shortMessage = message.length > 40 ? `${message.slice(0, 40)}...` : message;
+
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${row.id}</td>
-      <td>${formatTime(row.started_at)}</td>
-      <td>${row.trigger_type || ''}</td>
-      <td>${row.status || ''}</td>
-      <td>${row.output_file || '-'}</td>
-      <td>${row.message || ''}</td>
+      <td>${no}</td>
+      <td>${escapeHtml(row.server_name || '-')}</td>
+      <td>${escapeHtml(fileBase)}</td>
+      <td>${escapeHtml(formatTime(row.pm_date))}</td>
+      <td>${escapeHtml(row.status || '-')}</td>
+      <td>
+        ${escapeHtml(shortMessage)}
+        ${message ? `<button class="btn-secondary pm-mini-btn" data-report-action="view-message" data-message="${escapeHtml(message)}">👁</button>` : ''}
+      </td>
+      <td>
+        ${row.snapshot_id ? `<button class="btn-secondary pm-mini-btn" data-report-action="download-json" data-snapshot-id="${row.snapshot_id}">Download json</button>` : '-'}
+        ${row.snapshot_id ? `<button class="btn-secondary pm-mini-btn" data-report-action="download-txt" data-snapshot-id="${row.snapshot_id}">Download txt</button>` : ''}
+      </td>
     `;
-    pmRunsBody.appendChild(tr);
 
-    if (!latestError && row.status === 'FAILED') {
-      latestError = row;
-    }
+    elements.reportsBody.appendChild(tr);
   }
 
-  if (latestError) {
-    pmErrorLogs.textContent = latestError.stderr_tail || latestError.message || 'Error detail is empty';
-  } else {
-    pmErrorLogs.textContent = 'No errors';
-  }
+  const totalPage = Math.max(1, Math.ceil(reportTotal / Number(elements.pageSize.value || 30)));
+  elements.prevPageBtn.disabled = currentPage <= 1;
+  elements.nextPageBtn.disabled = currentPage >= totalPage;
+  elements.pagingLabel.textContent = `Page ${currentPage}/${totalPage} (${reportTotal})`;
 }
 
-async function loadPmData() {
-  const [configResult, runsResult] = await Promise.all([
-    callApi('/pm/config'),
-    callApi(`/pm/runs?limit=50&errors_only=${pmErrorsOnly.checked ? 'true' : 'false'}`)
-  ]);
-
-  fillConfig(configResult.config || {});
-
-  const currentUser = localStorage.getItem('allopsUsername') || 'unknown';
-  pmLoginStatus.textContent = `Authenticated: ${currentUser}`;
-  pmLoginStatus.className = 'status completed';
-
-  if (configResult.running) {
-    setStatus('In Progress', 'progress');
-  } else if (!configResult.config?.betaEnabled) {
-    setStatus('OFF', 'failed');
-  } else {
-    setStatus('Idle', 'completed');
-  }
-
-  pmMessage.textContent = `BETA: ${configResult.config?.betaEnabled ? 'ON' : 'OFF'} | Cron: ${configResult.config?.cronEnabled ? 'Enabled' : 'Disabled'} | Active: ${configResult.cronActive ? 'Yes' : 'No'} | Last run: ${formatTime(configResult.lastRunAt)}`;
-
-  if (configResult.config?.betaEnabled) {
-    renderRuns(runsResult.items || []);
-  }
+function openMessageModal(message) {
+  elements.messageDetail.textContent = message || '-';
+  elements.messageModal.classList.remove('hidden');
 }
 
-async function onSave() {
-  if (!pmBetaEnabled) {
-    pmError.textContent = 'PM BETA is OFF';
+function closeMessageModal() {
+  elements.messageModal.classList.add('hidden');
+}
+
+async function loadConfig() {
+  const data = await callApi('/pm/config');
+  fillConfigForm(data.config || {});
+  applyCenterState(data.config?.betaEnabled !== false);
+  applyDetailsEditable(false);
+}
+
+async function loadServers() {
+  if (!pmEnabled) {
     return;
   }
+  const data = await callApi('/pm/center/servers');
+  servers = Array.isArray(data.items) ? data.items : [];
+  renderServers();
+  renderServerFilter();
+}
 
-  pmError.textContent = '';
-  pmMessage.textContent = '';
+async function loadReports() {
+  if (!pmEnabled) {
+    return;
+  }
+  const pageSize = Number(elements.pageSize.value || 30);
+  const query = new URLSearchParams();
+  query.set('page', String(currentPage));
+  query.set('pageSize', String(pageSize));
+  if (currentServerId) {
+    query.set('serverId', String(currentServerId));
+  }
 
+  const data = await callApi(`/pm/center/reports?${query.toString()}`);
+  reports = Array.isArray(data.items) ? data.items : [];
+  reportTotal = Number(data.total || 0);
+  renderReports();
+}
+
+async function refreshPageData() {
+  await loadConfig();
+  if (!pmEnabled) {
+    return;
+  }
+  await Promise.all([loadServers(), loadReports()]);
+}
+
+async function onToggleCenter() {
+  setError(elements.detailsError, '');
   try {
-    setStatus('Saving...', 'progress');
+    const nextEnabled = !pmEnabled;
+    let payload = readConfigForm();
+    if (!pmEnabled && nextEnabled) {
+      const current = await callApi('/pm/config');
+      payload = {
+        customer: current?.config?.customer || '',
+        environment: current?.config?.environment || '',
+        cronExpression: current?.config?.cronExpression || '',
+        cronEnabled: Boolean(current?.config?.cronEnabled),
+        retentionDays: Number(current?.config?.retentionDays || 30)
+      };
+    }
+    payload.betaEnabled = nextEnabled;
+    payload.cronEnabled = nextEnabled ? payload.cronEnabled : false;
+
     await callApi('/pm/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(readConfigFromForm())
+      body: JSON.stringify(payload)
     });
-    setStatus('Saved', 'completed');
-    pmMessage.textContent = 'PM settings updated';
-    await loadPmData();
+
+    await refreshPageData();
   } catch (error) {
-    setStatus('Failed', 'failed');
-    pmError.textContent = error.message;
+    setError(elements.detailsError, error.message);
   }
 }
 
-async function onRunNow() {
-  if (!pmBetaEnabled) {
-    pmError.textContent = 'PM BETA is OFF';
+async function onEditDetails() {
+  setError(elements.detailsError, '');
+
+  if (!detailsEditMode) {
+    applyDetailsEditable(true);
     return;
   }
 
-  pmError.textContent = '';
-  pmMessage.textContent = '';
-
   try {
-    setStatus('Submitting...', 'progress');
-    await callApi('/pm/run', { method: 'POST' });
-    setStatus('In Progress', 'progress');
-    pmMessage.textContent = 'PM run started';
-    startPolling();
-  } catch (error) {
-    setStatus('Failed', 'failed');
-    pmError.textContent = error.message;
-  }
-}
-
-async function onToggleBeta() {
-  pmError.textContent = '';
-  pmMessage.textContent = '';
-
-  const nextEnabled = !pmBetaEnabled;
-
-  try {
-    setStatus('Saving...', 'progress');
+    const payload = readConfigForm();
     await callApi('/pm/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        customer: fields.customer.value.trim(),
-        environment: fields.environment.value.trim(),
-        retentionDays: Number(fields.retentionDays.value || 30),
-        cronExpression: fields.cronExpression.value.trim(),
-        cronEnabled: nextEnabled ? fields.cronEnabled.checked : false,
-        betaEnabled: nextEnabled
-      })
+      body: JSON.stringify(payload)
     });
 
-    if (!nextEnabled) {
-      stopPolling();
+    applyDetailsEditable(false);
+    setStatus(elements.detailsStatus, 'Saved', 'completed');
+    await loadConfig();
+  } catch (error) {
+    setError(elements.detailsError, error.message);
+    setStatus(elements.detailsStatus, 'Failed', 'failed');
+  }
+}
+
+async function onStartPm() {
+  if (!pmEnabled) {
+    return;
+  }
+  setError(elements.detailsError, '');
+  try {
+    setStatus(elements.detailsStatus, 'Queueing...', 'progress');
+    await callApi('/pm/center/start-manual', { method: 'POST' });
+    setStatus(elements.detailsStatus, 'Queued', 'completed');
+    await loadReports();
+  } catch (error) {
+    setError(elements.detailsError, error.message);
+    setStatus(elements.detailsStatus, 'Failed', 'failed');
+  }
+}
+
+async function onAddServer() {
+  if (!pmEnabled) {
+    return;
+  }
+  setError(elements.serverError, '');
+  const serverIp = elements.serverIp.value.trim();
+  if (!serverIp) {
+    setError(elements.serverError, 'Server IP is required');
+    return;
+  }
+
+  try {
+    setStatus(elements.serverStatus, 'Adding...', 'progress');
+    await callApi('/pm/center/servers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ serverIp })
+    });
+    elements.serverIp.value = '';
+    await loadServers();
+    setStatus(elements.serverStatus, 'Added', 'completed');
+  } catch (error) {
+    setError(elements.serverError, error.message);
+    setStatus(elements.serverStatus, 'Failed', 'failed');
+  }
+}
+
+async function onSetAllServers(enabled) {
+  if (!pmEnabled) {
+    return;
+  }
+  setError(elements.serverError, '');
+  try {
+    setStatus(elements.serverStatus, enabled ? 'Starting all...' : 'Pausing all...', 'progress');
+    await callApi('/pm/center/servers/state-all', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled })
+    });
+    await loadServers();
+    setStatus(elements.serverStatus, enabled ? 'All Active' : 'All Stop', 'completed');
+  } catch (error) {
+    setError(elements.serverError, error.message);
+    setStatus(elements.serverStatus, 'Failed', 'failed');
+  }
+}
+
+async function onServerTableClick(event) {
+  if (!pmEnabled) {
+    return;
+  }
+  const button = event.target.closest('button[data-server-action]');
+  if (!button) {
+    return;
+  }
+
+  const action = button.dataset.serverAction;
+  const serverId = Number(button.dataset.serverId);
+  if (!serverId) {
+    return;
+  }
+
+  setError(elements.serverError, '');
+
+  try {
+    if (action === 'toggle') {
+      const currentlyEnabled = button.dataset.serverEnabled === '1';
+      await callApi(`/pm/center/servers/${serverId}/state`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: !currentlyEnabled })
+      });
     }
 
-    await loadPmData();
-    if (nextEnabled) {
-      startPolling();
+    if (action === 'delete') {
+      await callApi(`/pm/center/servers/${serverId}`, { method: 'DELETE' });
     }
-    setStatus(nextEnabled ? 'ON' : 'OFF', nextEnabled ? 'completed' : 'failed');
+
+    await Promise.all([loadServers(), loadReports()]);
+    setStatus(elements.serverStatus, 'Updated', 'completed');
   } catch (error) {
-    setStatus('Failed', 'failed');
-    pmError.textContent = error.message;
+    setError(elements.serverError, error.message);
+    setStatus(elements.serverStatus, 'Failed', 'failed');
   }
+}
+
+async function onSearchServer() {
+  if (!pmEnabled) {
+    return;
+  }
+  currentServerId = elements.reportServerFilter.value ? Number(elements.reportServerFilter.value) : null;
+  currentPage = 1;
+  setError(elements.reportError, '');
+  try {
+    await loadReports();
+  } catch (error) {
+    setError(elements.reportError, error.message);
+  }
+}
+
+async function onClearSearch() {
+  if (!pmEnabled) {
+    return;
+  }
+  currentServerId = null;
+  currentPage = 1;
+  elements.reportServerFilter.value = '';
+  setError(elements.reportError, '');
+  try {
+    await loadReports();
+  } catch (error) {
+    setError(elements.reportError, error.message);
+  }
+}
+
+async function onReportTableClick(event) {
+  if (!pmEnabled) {
+    return;
+  }
+  const button = event.target.closest('button[data-report-action]');
+  if (!button) {
+    return;
+  }
+
+  const action = button.dataset.reportAction;
+
+  if (action === 'view-message') {
+    openMessageModal(button.dataset.message || '');
+    return;
+  }
+
+  const snapshotId = Number(button.dataset.snapshotId);
+  if (!snapshotId) {
+    return;
+  }
+
+  setError(elements.reportError, '');
+
+  try {
+    if (action === 'download-json') {
+      await downloadWithAuth(`/pm/snapshots/${snapshotId}/download-json`, `pm-${snapshotId}.json`);
+    }
+    if (action === 'download-txt') {
+      await downloadWithAuth(`/pm/snapshots/${snapshotId}/download-txt`, `pm-${snapshotId}.txt`);
+    }
+  } catch (error) {
+    setError(elements.reportError, error.message);
+  }
+}
+
+function startPolling() {
+  if (!pmEnabled) {
+    return;
+  }
+  stopPolling();
+  poller = setInterval(() => {
+    Promise.all([loadServers(), loadReports()]).catch((error) => {
+      setError(elements.reportError, error.message);
+    });
+  }, 15000);
 }
 
 function stopPolling() {
@@ -280,15 +633,6 @@ function stopPolling() {
     clearInterval(poller);
     poller = null;
   }
-}
-
-function startPolling() {
-  stopPolling();
-  poller = setInterval(() => {
-    loadPmData().catch((error) => {
-      pmError.textContent = error.message;
-    });
-  }, 5000);
 }
 
 function stopIdleTimeout() {
@@ -321,49 +665,128 @@ function startIdleTimeout() {
   resetIdleTimeout();
 }
 
-function init() {
-  if (!token) {
-    navigateToLogin();
-    return;
-  }
-
-  startIdleTimeout();
-
-  pmSaveBtn.addEventListener('click', onSave);
-  pmRunBtn.addEventListener('click', onRunNow);
-  pmRefreshBtn.addEventListener('click', () => {
-    loadPmData().catch((error) => {
-      pmError.textContent = error.message;
-    });
-  });
-  pmErrorsOnly.addEventListener('change', () => {
-    if (!pmBetaEnabled) {
-      return;
-    }
-
-    loadPmData().catch((error) => {
-      pmError.textContent = error.message;
-    });
-  });
-
-  if (pmBetaToggleBtn) {
-    pmBetaToggleBtn.addEventListener('click', onToggleBeta);
-  }
-
-  pmLogoutBtn.addEventListener('click', () => {
+function bindEvents() {
+  elements.logoutBtn.addEventListener('click', () => {
     stopPolling();
     stopIdleTimeout();
     clearSession();
     navigateToLogin();
   });
 
-  loadPmData().then(() => {
-    if (pmBetaEnabled) {
-      startPolling();
-    }
-  }).catch((error) => {
-    pmError.textContent = error.message;
+  elements.centerToggleBtn.addEventListener('click', () => {
+    onToggleCenter().catch((error) => {
+      setError(elements.detailsError, error.message);
+    });
   });
+
+  elements.editDetailsBtn.addEventListener('click', () => {
+    onEditDetails().catch((error) => {
+      setError(elements.detailsError, error.message);
+    });
+  });
+
+  elements.startPmBtn.addEventListener('click', () => {
+    onStartPm().catch((error) => {
+      setError(elements.detailsError, error.message);
+    });
+  });
+
+  elements.addServerBtn.addEventListener('click', () => {
+    onAddServer().catch((error) => {
+      setError(elements.serverError, error.message);
+    });
+  });
+
+  elements.startAllBtn.addEventListener('click', () => {
+    onSetAllServers(true).catch((error) => {
+      setError(elements.serverError, error.message);
+    });
+  });
+
+  elements.pauseAllBtn.addEventListener('click', () => {
+    onSetAllServers(false).catch((error) => {
+      setError(elements.serverError, error.message);
+    });
+  });
+
+  elements.serversBody.addEventListener('click', (event) => {
+    onServerTableClick(event).catch((error) => {
+      setError(elements.serverError, error.message);
+    });
+  });
+
+  elements.searchServerBtn.addEventListener('click', () => {
+    onSearchServer().catch((error) => {
+      setError(elements.reportError, error.message);
+    });
+  });
+
+  elements.clearSearchBtn.addEventListener('click', () => {
+    onClearSearch().catch((error) => {
+      setError(elements.reportError, error.message);
+    });
+  });
+
+  elements.pageSize.addEventListener('change', () => {
+    currentPage = 1;
+    loadReports().catch((error) => {
+      setError(elements.reportError, error.message);
+    });
+  });
+
+  elements.prevPageBtn.addEventListener('click', () => {
+    if (currentPage > 1) {
+      currentPage -= 1;
+      loadReports().catch((error) => {
+        setError(elements.reportError, error.message);
+      });
+    }
+  });
+
+  elements.nextPageBtn.addEventListener('click', () => {
+    const totalPage = Math.max(1, Math.ceil(reportTotal / Number(elements.pageSize.value || 30)));
+    if (currentPage < totalPage) {
+      currentPage += 1;
+      loadReports().catch((error) => {
+        setError(elements.reportError, error.message);
+      });
+    }
+  });
+
+  elements.reportsBody.addEventListener('click', (event) => {
+    onReportTableClick(event).catch((error) => {
+      setError(elements.reportError, error.message);
+    });
+  });
+
+  elements.messageCloseBtn.addEventListener('click', closeMessageModal);
+  elements.messageModal.addEventListener('click', (event) => {
+    if (event.target === elements.messageModal) {
+      closeMessageModal();
+    }
+  });
+}
+
+function init() {
+  if (!token) {
+    navigateToLogin();
+    return;
+  }
+
+  bindEvents();
+  startIdleTimeout();
+
+  refreshPageData()
+    .then(() => {
+      setStatus(elements.serverStatus, 'Ready', 'completed');
+      setStatus(elements.detailsStatus, 'Read only', 'completed');
+      if (pmEnabled) {
+        startPolling();
+      }
+    })
+    .catch((error) => {
+      setError(elements.reportError, error.message);
+    });
 }
 
 window.addEventListener('beforeunload', () => {

@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/support/" />
+    <title>beflex-support | Query Sizing</title>
+    <link rel="stylesheet" href="styles.v3.css?v=20260306-query-sizing1" />
+  </head>
+  <body data-nav-page="query-sizing-service">
+    <div class="sidebar">
+      <div class="logo-area">
+        <div class="logo-placeholder">beflex <span>support</span></div>
+      </div>
+      <div class="nav-links"></div>
+    </div>
+
+    <div class="main-content" data-session-timeout-minutes="30">
+      <header>
+        <div class="breadcrumb">beflex Admin Support / Query Sizing</div>
+        <h1>beflex support - Query Sizing file</h1>
+      </header>
+
+      <section class="card">
+        <h3>Session</h3>
+        <div class="actions">
+          <span id="qsLoginStatus" class="status">Authenticated</span>
+          <button class="btn-secondary" id="qsLogoutBtn" type="button">Logout</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Run Query</h3>
+        <p class="muted">ส่ง Query ไปยัง Alfresco Search API ผ่าน backend เพื่อคำนวณจำนวนไฟล์และขนาดรวม โดย frontend แสดงผล realtime จากสถานะที่ backend อัปเดต</p>
+
+        <details class="guide-collapsible" open>
+          <summary class="guide-toggle">Query ตัวอย่างสำหรับ Copy</summary>
+          <div class="guide-content">
+            <div class="guide-note guide-note-accent">
+              <h4>Example 1</h4>
+              <div class="markdown-sample" id="qsExample1">ERC:DocType:ReportFile and TAG:ocrtimeout AND PATH:"/app:company_home/st:sites/cm:erc/cm:documentLibrary/cm:e-Meeting//." AND TYPE:"cm:content"</div>
+              <h4>Example 2</h4>
+              <div class="markdown-sample" id="qsExample2">PATH:"/app:company_home/st:sites//." AND TYPE:"cm:content"</div>
+              <h4>Example 3</h4>
+              <div class="markdown-sample" id="qsExample3">Demo:DocType:ReportFile and TAG:ocrtimeout AND PATH:"/app:company_home/st:sites/cm:demo/cm:documentLibrary//." AND TYPE:"cm:content"</div>
+              <p class="muted">หมายเหตุ: backend กำหนด paging แบบคงที่ <b>maxItems = 100</b> เพื่อคุมโหลดระบบและความเสถียรของการ query ขนาดใหญ่</p>
+            </div>
+          </div>
+        </details>
+
+        <label for="qsQueryInput">AFTS Query</label>
+        <textarea id="qsQueryInput" rows="5" placeholder="ใส่ query เช่น PATH:&quot;/app:company_home/st:sites//.&quot; AND TYPE:&quot;cm:content&quot;"></textarea>
+        <div id="qsQueryWarning" class="qs-warning hidden"></div>
+
+        <div class="actions">
+          <button class="btn-secondary" id="qsUseExample1Btn" type="button">Use Example 1</button>
+          <button class="btn-secondary" id="qsUseExample2Btn" type="button">Use Example 2</button>
+          <button class="btn-secondary" id="qsUseExample3Btn" type="button">Use Example 3</button>
+          <button class="btn-primary" id="qsRunBtn" type="button">Run Query</button>
+          <span id="qsRunStatus" class="status">Idle</span>
+        </div>
+        <div id="qsRunError" class="error"></div>
+      </section>
+
+      <section class="card">
+        <h3>Realtime Result</h3>
+        <div id="qsRunMeta" class="muted">No run selected</div>
+        <div class="logs" id="qsRealtimeBox">No realtime data</div>
+      </section>
+
+      <section class="card">
+        <h3>Query Report</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Query Date</th>
+              <th>Query Command</th>
+              <th>User</th>
+              <th>Total Files</th>
+              <th>Total size (MB)</th>
+              <th>Total size (GB)</th>
+              <th>Message status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="qsReportBody"></tbody>
+        </table>
+
+        <div class="actions">
+          <label for="qsPageSize" style="margin: 0;">Paging</label>
+          <select id="qsPageSize">
+            <option value="10">10</option>
+            <option value="30" selected>30</option>
+            <option value="100">100</option>
+          </select>
+          <button class="btn-secondary" id="qsPrevPageBtn" type="button">Prev</button>
+          <button class="btn-secondary" id="qsNextPageBtn" type="button">Next</button>
+          <span id="qsPagingLabel" class="status">Page 1 / 1</span>
+        </div>
+      </section>
+    </div>
+
+    <script src="sidebar-nav.js?v=20260306-nav8"></script>
+    <script src="query-sizing-page.js?v=20260306-query-sizing1"></script>
+  </body>
+</html>

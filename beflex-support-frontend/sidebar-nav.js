@@ -1,4 +1,7 @@
 (function renderSidebarMenu() {
+  // Toggle this flag to show/hide PM menu without touching other files.
+  const SHOW_PM = false;
+
   const navContainer = document.querySelector('.sidebar .nav-links');
   if (!navContainer) {
     return;
@@ -6,12 +9,17 @@
 
   const currentPage = document.body.dataset.navPage || '';
   const menuItems = [
-    { id: 'service', href: 'service.html', label: 'Import Permission' },
-    { id: 'group-service', href: 'group-service.html', label: 'Import User to Group' },
-    { id: 'user-csv-service', href: 'user-csv-service.html', label: 'Create user csv' },
-    { id: 'pm-service', href: 'pm.html', label: 'PM' },
-    { id: 'support-other', href: 'support-other.html', label: 'Support Other', support: true }
+    { id: 'service', href: '/support/service.html', label: 'Import Permission' },
+    { id: 'group-service', href: '/support/group-service.html', label: 'Import User to Group' },
+    { id: 'user-csv-service', href: '/support/user-csv-service.html', label: 'Create user csv' },
+    { id: 'query-sizing-service', href: '/support/query-sizing.html', label: 'Query Sizing file' },
+    { id: 'audit-service', href: '/support/audit.html', label: 'Audit' },
+    { id: 'support-other', href: '/support/support-other.html', label: 'Support Other', support: true }
   ];
+
+  if (SHOW_PM) {
+    menuItems.splice(3, 0, { id: 'pm-service', href: '/support/pm.html', label: 'PM' });
+  }
 
   navContainer.innerHTML = menuItems
     .map((item) => {

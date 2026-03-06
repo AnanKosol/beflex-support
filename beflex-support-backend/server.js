@@ -10,6 +10,7 @@ const dotenv = require('dotenv');
 const { Pool } = require('pg');
 const XLSX = require('xlsx');
 const cron = require('node-cron');
+const crypto = require('crypto');
 const { createAlfrescoAuthProvider } = require('./services/alfresco-auth-provider');
 const { runPmReport } = require('./scripts/pm-report');
 
@@ -56,10 +57,22 @@ const SERVICE_PERMISSION_IMPORT = 'permission-import';
 const SERVICE_GROUP_MEMBER_IMPORT = 'group-member-import';
 const SERVICE_USER_CSV_IMPORT = 'user-csv-import';
 const SERVICE_PM = 'pm-service';
+const SERVICE_QUERY_SIZING = 'query-sizing';
+const QUERY_SIZING_TABLE = 'allops_raku_query_sizing_reports';
+const QUERY_SIZING_MAX_ITEMS = 100;
+const QUERY_SIZING_PAGE_DELAY_MS = Number(process.env.QUERY_SIZING_PAGE_DELAY_MS || 150);
 const PM_CONFIG_TABLE = 'allops_raku_pm_config';
 const PM_RUNS_TABLE = 'allops_raku_pm_runs';
+const PM_CUSTOMER_TABLE = 'allops_raku_pm_customers';
+const PM_ENVIRONMENT_TABLE = 'allops_raku_pm_environments';
+const PM_SERVER_TABLE = 'allops_raku_pm_servers';
+const PM_APPLICATION_TABLE = 'allops_raku_pm_applications';
+const PM_AGENT_TABLE = 'allops_raku_pm_agents';
+const PM_JOB_TABLE = 'allops_raku_pm_jobs';
+const PM_SNAPSHOT_TABLE = 'allops_raku_pm_snapshots';
 const PM_SCRIPT_TIMEOUT_MS = Number(process.env.PM_SCRIPT_TIMEOUT_MS || 30 * 60 * 1000);
 const PM_TIMEZONE = process.env.PM_TIMEZONE || 'Asia/Bangkok';
+const PM_AGENT_SHARED_TOKEN = process.env.PM_AGENT_SHARED_TOKEN || '';
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -70,6 +83,7 @@ const upload = multer({
 
 let pool;
 const processingTasks = new Set();
+const querySizingProcessingRuns = new Set();
 let pmRunInProgress = false;
 let pmCronTask = null;
 
@@ -153,6 +167,229 @@ async function safeAddAuditEvent(payload) {
     await addAuditEvent(payload);
   } catch (error) {
     console.error('Cannot write audit event', error?.message || error);
+  }
+}
+
+function formatSizeInMb(bytes) {
+  const value = Number(bytes || 0) / (1024 * 1024);
+  return Number(value.toFixed(2));
+}
+
+function formatSizeInGb(bytes) {
+  const value = Number(bytes || 0) / (1024 * 1024 * 1024);
+  return Number(value.toFixed(4));
+}
+
+function toPositiveInt(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return fallback;
+  }
+  return Math.floor(parsed);
+}
+
+function truncateMessage(value, maxLen = 1000) {
+  const text = String(value || '').trim();
+  if (!text) {
+    return '';
+  }
+  return text.length <= maxLen ? text : `${text.slice(0, maxLen)}...`;
+}
+
+function normalizeAftsQuery(input) {
+  const raw = String(input || '').trim();
+  const hadJsonEscapedQuotes = /\\"/.test(raw);
+  const normalized = hadJsonEscapedQuotes ? raw.replace(/\\"/g, '"') : raw;
+
+  return {
+    raw,
+    normalized,
+    hadJsonEscapedQuotes
+  };
+}
+
+async function processQuerySizingRun(runId) {
+  if (querySizingProcessingRuns.has(runId)) {
+    return;
+  }
+
+  querySizingProcessingRuns.add(runId);
+
+  try {
+    const runResult = await pool.query(
+      `SELECT id, queried_at, username, query_text, status FROM ${QUERY_SIZING_TABLE} WHERE id = $1`,
+      [runId]
+    );
+    const run = runResult.rows[0];
+    if (!run) {
+      return;
+    }
+
+    await pool.query(
+      `UPDATE ${QUERY_SIZING_TABLE} SET status = $1, message = $2, updated_at = $3 WHERE id = $4`,
+      ['PROCESSING', 'Query sizing started', getNowIso(), runId]
+    );
+
+    await safeAddAuditEvent({
+      serviceName: SERVICE_QUERY_SIZING,
+      username: run.username,
+      actionType: 'QUERY_SIZING_RUN',
+      status: 'PROCESSING',
+      message: 'Query sizing run started',
+      entityType: 'query_sizing_run',
+      entityId: String(runId),
+      metadata: {
+        maxItemsPerPage: QUERY_SIZING_MAX_ITEMS
+      }
+    });
+
+    const { authHeader, credential } = await alfrescoAuthProvider.getValidatedServiceAuth({
+      purpose: 'query sizing search',
+      formatError: formatAlfrescoError
+    });
+
+    const searchUrl = `${ALFRESCO_BASE_URL}/alfresco/api/-default-/public/search/versions/1/search`;
+    let skipCount = 0;
+    let page = 1;
+    let hasMoreItems = true;
+    let totalFiles = 0;
+    let totalSizeBytes = 0;
+
+    while (hasMoreItems) {
+      const queryBody = {
+        query: {
+          language: 'afts',
+          query: run.query_text
+        },
+        include: ['properties', 'path'],
+        paging: {
+          maxItems: QUERY_SIZING_MAX_ITEMS,
+          skipCount
+        },
+        sort: [{ type: 'FIELD', field: 'cm:name', ascending: 'false' }]
+      };
+
+      const response = await axios.post(searchUrl, queryBody, {
+        timeout: ALFRESCO_TIMEOUT_MS,
+        headers: {
+          Authorization: authHeader,
+          'Content-Type': 'application/json'
+        }
+      });
+
+      const entries = response?.data?.list?.entries || [];
+      const pagination = response?.data?.list?.pagination || {};
+
+      let batchSizeBytes = 0;
+      for (const item of entries) {
+        const sizeInBytes = Number(item?.entry?.content?.sizeInBytes || 0);
+        if (Number.isFinite(sizeInBytes) && sizeInBytes > 0) {
+          batchSizeBytes += sizeInBytes;
+        }
+      }
+
+      totalFiles += entries.length;
+      totalSizeBytes += batchSizeBytes;
+
+      const statusMessage = `Processing page ${page} (batch: ${entries.length} files)`;
+      await pool.query(
+        `
+        UPDATE ${QUERY_SIZING_TABLE}
+        SET total_files = $1,
+            total_size_bytes = $2,
+            total_size_mb = $3,
+            total_size_gb = $4,
+            message = $5,
+            updated_at = $6
+        WHERE id = $7
+        `,
+        [
+          totalFiles,
+          totalSizeBytes,
+          formatSizeInMb(totalSizeBytes),
+          formatSizeInGb(totalSizeBytes),
+          statusMessage,
+          getNowIso(),
+          runId
+        ]
+      );
+
+      hasMoreItems = Boolean(pagination.hasMoreItems);
+      skipCount += QUERY_SIZING_MAX_ITEMS;
+      page += 1;
+
+      if (hasMoreItems && QUERY_SIZING_PAGE_DELAY_MS > 0) {
+        await sleep(QUERY_SIZING_PAGE_DELAY_MS);
+      }
+    }
+
+    const finalMessage = `Completed with ${totalFiles} files using service account '${credential.username}'`;
+    await pool.query(
+      `
+      UPDATE ${QUERY_SIZING_TABLE}
+      SET status = $1,
+          total_files = $2,
+          total_size_bytes = $3,
+          total_size_mb = $4,
+          total_size_gb = $5,
+          message = $6,
+          finished_at = $7,
+          updated_at = $8
+      WHERE id = $9
+      `,
+      [
+        'COMPLETED',
+        totalFiles,
+        totalSizeBytes,
+        formatSizeInMb(totalSizeBytes),
+        formatSizeInGb(totalSizeBytes),
+        finalMessage,
+        getNowIso(),
+        getNowIso(),
+        runId
+      ]
+    );
+
+    await safeAddAuditEvent({
+      serviceName: SERVICE_QUERY_SIZING,
+      username: run.username,
+      actionType: 'QUERY_SIZING_RUN',
+      status: 'COMPLETED',
+      message: finalMessage,
+      entityType: 'query_sizing_run',
+      entityId: String(runId),
+      metadata: {
+        total_files: totalFiles,
+        total_size_bytes: totalSizeBytes,
+        total_size_mb: formatSizeInMb(totalSizeBytes),
+        total_size_gb: formatSizeInGb(totalSizeBytes),
+        max_items_per_page: QUERY_SIZING_MAX_ITEMS
+      }
+    });
+  } catch (error) {
+    const reason = truncateMessage(formatAlfrescoError(error, 'Query sizing failed'), 1000);
+    await pool.query(
+      `
+      UPDATE ${QUERY_SIZING_TABLE}
+      SET status = $1,
+          message = $2,
+          finished_at = $3,
+          updated_at = $4
+      WHERE id = $5
+      `,
+      ['FAILED', reason, getNowIso(), getNowIso(), runId]
+    );
+
+    await safeAddAuditEvent({
+      serviceName: SERVICE_QUERY_SIZING,
+      actionType: 'QUERY_SIZING_RUN',
+      status: 'FAILED',
+      message: reason,
+      entityType: 'query_sizing_run',
+      entityId: String(runId)
+    });
+  } finally {
+    querySizingProcessingRuns.delete(runId);
   }
 }
 
@@ -507,6 +744,30 @@ async function initDb() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_${AUDIT_EVENTS_TABLE}_username_time ON ${AUDIT_EVENTS_TABLE}(username, event_time DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_${AUDIT_EVENTS_TABLE}_status_time ON ${AUDIT_EVENTS_TABLE}(status, event_time DESC)`);
 
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS ${QUERY_SIZING_TABLE} (
+      id BIGSERIAL PRIMARY KEY,
+      queried_at TIMESTAMPTZ NOT NULL,
+      username TEXT NOT NULL,
+      query_text TEXT NOT NULL,
+      status TEXT NOT NULL,
+      total_files BIGINT NOT NULL DEFAULT 0,
+      total_size_bytes BIGINT NOT NULL DEFAULT 0,
+      total_size_mb NUMERIC(20, 2) NOT NULL DEFAULT 0,
+      total_size_gb NUMERIC(20, 4) NOT NULL DEFAULT 0,
+      message TEXT,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      finished_at TIMESTAMPTZ
+    )
+    `
+  );
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${QUERY_SIZING_TABLE}_queried_at ON ${QUERY_SIZING_TABLE}(queried_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${QUERY_SIZING_TABLE}_username ON ${QUERY_SIZING_TABLE}(username, queried_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${QUERY_SIZING_TABLE}_status ON ${QUERY_SIZING_TABLE}(status, queried_at DESC)`);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${PM_CONFIG_TABLE} (
       id INTEGER PRIMARY KEY,
@@ -536,6 +797,130 @@ async function initDb() {
 
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_${PM_RUNS_TABLE}_started_at ON ${PM_RUNS_TABLE}(started_at DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_${PM_RUNS_TABLE}_status ON ${PM_RUNS_TABLE}(status)`);
+
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS ${PM_CUSTOMER_TABLE} (
+      id BIGSERIAL PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL
+    )
+    `
+  );
+
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS ${PM_ENVIRONMENT_TABLE} (
+      id BIGSERIAL PRIMARY KEY,
+      customer_id BIGINT NOT NULL UNIQUE REFERENCES ${PM_CUSTOMER_TABLE}(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL
+    )
+    `
+  );
+
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS ${PM_SERVER_TABLE} (
+      id BIGSERIAL PRIMARY KEY,
+      environment_id BIGINT NOT NULL REFERENCES ${PM_ENVIRONMENT_TABLE}(id) ON DELETE CASCADE,
+      server_key TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      host TEXT NOT NULL,
+      site_code TEXT,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL
+    )
+    `
+  );
+
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS ${PM_APPLICATION_TABLE} (
+      id BIGSERIAL PRIMARY KEY,
+      server_id BIGINT NOT NULL REFERENCES ${PM_SERVER_TABLE}(id) ON DELETE CASCADE,
+      app_type TEXT NOT NULL,
+      app_name TEXT NOT NULL,
+      service_name TEXT,
+      collector_profile JSONB NOT NULL DEFAULT '{}'::jsonb,
+      metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+      enabled BOOLEAN NOT NULL DEFAULT true,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      UNIQUE (server_id, app_type, app_name)
+    )
+    `
+  );
+
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS ${PM_AGENT_TABLE} (
+      id BIGSERIAL PRIMARY KEY,
+      agent_key TEXT NOT NULL UNIQUE,
+      server_id BIGINT REFERENCES ${PM_SERVER_TABLE}(id) ON DELETE SET NULL,
+      site_code TEXT,
+      capabilities JSONB NOT NULL DEFAULT '{}'::jsonb,
+      status TEXT NOT NULL DEFAULT 'ONLINE',
+      last_seen_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL
+    )
+    `
+  );
+
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS ${PM_SNAPSHOT_TABLE} (
+      id BIGSERIAL PRIMARY KEY,
+      customer_id BIGINT NOT NULL REFERENCES ${PM_CUSTOMER_TABLE}(id) ON DELETE CASCADE,
+      environment_id BIGINT NOT NULL REFERENCES ${PM_ENVIRONMENT_TABLE}(id) ON DELETE CASCADE,
+      server_id BIGINT NOT NULL REFERENCES ${PM_SERVER_TABLE}(id) ON DELETE CASCADE,
+      application_id BIGINT REFERENCES ${PM_APPLICATION_TABLE}(id) ON DELETE SET NULL,
+      collected_at TIMESTAMPTZ NOT NULL,
+      trigger_type TEXT NOT NULL,
+      source_agent TEXT NOT NULL,
+      snapshot_json JSONB NOT NULL,
+      report_txt TEXT,
+      hash_sha256 TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL
+    )
+    `
+  );
+
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS ${PM_JOB_TABLE} (
+      id BIGSERIAL PRIMARY KEY,
+      server_id BIGINT NOT NULL REFERENCES ${PM_SERVER_TABLE}(id) ON DELETE CASCADE,
+      application_id BIGINT REFERENCES ${PM_APPLICATION_TABLE}(id) ON DELETE SET NULL,
+      trigger_type TEXT NOT NULL,
+      requested_by TEXT,
+      requested_at TIMESTAMPTZ NOT NULL,
+      assigned_agent_key TEXT,
+      started_at TIMESTAMPTZ,
+      finished_at TIMESTAMPTZ,
+      status TEXT NOT NULL,
+      snapshot_id BIGINT REFERENCES ${PM_SNAPSHOT_TABLE}(id) ON DELETE SET NULL,
+      error_detail TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    `
+  );
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${PM_SERVER_TABLE}_env ON ${PM_SERVER_TABLE}(environment_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${PM_APPLICATION_TABLE}_server ON ${PM_APPLICATION_TABLE}(server_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${PM_AGENT_TABLE}_server ON ${PM_AGENT_TABLE}(server_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${PM_AGENT_TABLE}_seen ON ${PM_AGENT_TABLE}(last_seen_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${PM_JOB_TABLE}_status_time ON ${PM_JOB_TABLE}(status, requested_at ASC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${PM_JOB_TABLE}_server ON ${PM_JOB_TABLE}(server_id)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${PM_SNAPSHOT_TABLE}_server_time ON ${PM_SNAPSHOT_TABLE}(server_id, collected_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${PM_SNAPSHOT_TABLE}_json ON ${PM_SNAPSHOT_TABLE} USING GIN (snapshot_json)`);
 
   await pool.query(
     `
@@ -607,6 +992,484 @@ function authMiddleware(req, res, next) {
   } catch (error) {
     return res.status(401).json({ message: 'Token expired or invalid' });
   }
+}
+
+function normalizeCode(value, fallback = 'unknown') {
+  const normalized = String(value || fallback)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return normalized || fallback;
+}
+
+function asText(value, fallback = '') {
+  const text = String(value ?? fallback).trim();
+  return text || String(fallback || '').trim();
+}
+
+function toSafeJson(value, fallback = {}) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return fallback;
+  }
+  return value;
+}
+
+function hashSnapshot(payload) {
+  const serialized = JSON.stringify(payload || {});
+  return crypto.createHash('sha256').update(serialized).digest('hex');
+}
+
+function agentAuthMiddleware(req, res, next) {
+  if (!PM_AGENT_SHARED_TOKEN) {
+    return res.status(503).json({ message: 'PM agent token is not configured' });
+  }
+
+  const candidate = String(
+    req.headers['x-agent-token']
+    || req.headers['x-api-token']
+    || (req.headers.authorization || '').replace(/^Bearer\s+/i, '')
+    || ''
+  ).trim();
+
+  if (!candidate || candidate !== PM_AGENT_SHARED_TOKEN) {
+    return res.status(401).json({ message: 'Invalid agent token' });
+  }
+
+  return next();
+}
+
+async function upsertPmRegistryHierarchy(input = {}, updatedBy = 'system') {
+  const customerInput = toSafeJson(input.customer, {});
+  const environmentInput = toSafeJson(input.environment, {});
+  const serverInput = toSafeJson(input.server, {});
+  const applications = Array.isArray(input.applications) ? input.applications : [];
+
+  const customerCode = normalizeCode(customerInput.code || customerInput.name || 'customer');
+  const customerName = asText(customerInput.name, customerCode);
+  const environmentName = asText(environmentInput.name, 'prod');
+  const serverKey = normalizeCode(serverInput.serverKey || serverInput.host || serverInput.name || `${customerCode}-${environmentName}`);
+  const serverHost = asText(serverInput.host, serverKey);
+  const serverName = asText(serverInput.name, serverHost);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const customerRow = await client.query(
+      `
+      INSERT INTO ${PM_CUSTOMER_TABLE} (code, name, metadata, created_at, updated_at)
+      VALUES ($1, $2, $3::jsonb, $4, $5)
+      ON CONFLICT (code)
+      DO UPDATE SET name = EXCLUDED.name, metadata = EXCLUDED.metadata, updated_at = EXCLUDED.updated_at
+      RETURNING id, code, name
+      `,
+      [customerCode, customerName, JSON.stringify(toSafeJson(customerInput.metadata, {})), getNowIso(), getNowIso()]
+    );
+    const customerId = customerRow.rows[0].id;
+
+    const environmentRow = await client.query(
+      `
+      INSERT INTO ${PM_ENVIRONMENT_TABLE} (customer_id, name, metadata, created_at, updated_at)
+      VALUES ($1, $2, $3::jsonb, $4, $5)
+      ON CONFLICT (customer_id)
+      DO UPDATE SET name = EXCLUDED.name, metadata = EXCLUDED.metadata, updated_at = EXCLUDED.updated_at
+      RETURNING id, customer_id, name
+      `,
+      [customerId, environmentName, JSON.stringify(toSafeJson(environmentInput.metadata, {})), getNowIso(), getNowIso()]
+    );
+    const environmentId = environmentRow.rows[0].id;
+
+    const serverRow = await client.query(
+      `
+      INSERT INTO ${PM_SERVER_TABLE} (environment_id, server_key, name, host, site_code, metadata, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8)
+      ON CONFLICT (server_key)
+      DO UPDATE SET
+        environment_id = EXCLUDED.environment_id,
+        name = EXCLUDED.name,
+        host = EXCLUDED.host,
+        site_code = EXCLUDED.site_code,
+        metadata = EXCLUDED.metadata,
+        updated_at = EXCLUDED.updated_at
+      RETURNING id, environment_id, server_key, name, host, site_code
+      `,
+      [
+        environmentId,
+        serverKey,
+        serverName,
+        serverHost,
+        asText(serverInput.siteCode, 'default-site'),
+        JSON.stringify(toSafeJson(serverInput.metadata, {})),
+        getNowIso(),
+        getNowIso()
+      ]
+    );
+    const serverId = serverRow.rows[0].id;
+
+    const appRows = [];
+    for (const app of applications) {
+      const appType = normalizeCode(app?.appType || app?.type || 'other');
+      const appName = asText(app?.appName || app?.name, appType);
+      const serviceName = asText(app?.serviceName, '');
+      const profile = toSafeJson(app?.collectorProfile, {});
+      const metadata = toSafeJson(app?.metadata, {});
+
+      const inserted = await client.query(
+        `
+        INSERT INTO ${PM_APPLICATION_TABLE}
+          (server_id, app_type, app_name, service_name, collector_profile, metadata, enabled, created_at, updated_at)
+        VALUES
+          ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9)
+        ON CONFLICT (server_id, app_type, app_name)
+        DO UPDATE SET
+          service_name = EXCLUDED.service_name,
+          collector_profile = EXCLUDED.collector_profile,
+          metadata = EXCLUDED.metadata,
+          enabled = EXCLUDED.enabled,
+          updated_at = EXCLUDED.updated_at
+        RETURNING id, server_id, app_type, app_name, service_name, collector_profile, metadata, enabled
+        `,
+        [serverId, appType, appName, serviceName || null, JSON.stringify(profile), JSON.stringify(metadata), app?.enabled !== false, getNowIso(), getNowIso()]
+      );
+      appRows.push(inserted.rows[0]);
+    }
+
+    await client.query('COMMIT');
+
+    await safeAddAuditEvent({
+      serviceName: SERVICE_PM,
+      username: updatedBy,
+      actionType: 'PM_REGISTRY_UPSERT',
+      status: 'SUCCESS',
+      message: 'PM registry updated',
+      entityType: 'pm_server',
+      entityId: String(serverId),
+      metadata: {
+        customer_id: customerId,
+        environment_id: environmentId,
+        applications: appRows.length
+      }
+    });
+
+    return {
+      customer: customerRow.rows[0],
+      environment: environmentRow.rows[0],
+      server: serverRow.rows[0],
+      applications: appRows
+    };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function createPmJob({ serverId, applicationId, triggerType = 'MANUAL', requestedBy = 'system', requestedAt = getNowIso() }) {
+  const result = await pool.query(
+    `
+    INSERT INTO ${PM_JOB_TABLE}
+      (server_id, application_id, trigger_type, requested_by, requested_at, status)
+    VALUES
+      ($1, $2, $3, $4, $5, 'PENDING')
+    RETURNING id, server_id, application_id, trigger_type, requested_by, requested_at, status
+    `,
+    [serverId, applicationId || null, triggerType, requestedBy, requestedAt]
+  );
+  return result.rows[0];
+}
+
+async function listPmCenterServers() {
+  const result = await pool.query(
+    `
+    SELECT
+      s.id AS server_id,
+      e.name AS env,
+      s.server_key,
+      s.name AS server_name,
+      s.host AS server_ip,
+      CASE
+        WHEN LOWER(COALESCE(s.metadata->>'pm_enabled', '')) IN ('true', 'false') THEN (s.metadata->>'pm_enabled')::boolean
+        ELSE true
+      END AS pm_enabled,
+      ag.agent_key,
+      ag.status AS agent_status,
+      ag.last_seen_at
+    FROM ${PM_SERVER_TABLE} s
+    JOIN ${PM_ENVIRONMENT_TABLE} e ON e.id = s.environment_id
+    LEFT JOIN LATERAL (
+      SELECT agent_key, status, last_seen_at
+      FROM ${PM_AGENT_TABLE} ag
+      WHERE ag.server_id = s.id
+      ORDER BY ag.last_seen_at DESC NULLS LAST, ag.id DESC
+      LIMIT 1
+    ) ag ON true
+    ORDER BY e.name ASC, s.name ASC, s.id ASC
+    `
+  );
+
+  return result.rows.map((row) => ({
+    server_id: row.server_id,
+    env: row.env,
+    server_key: row.server_key,
+    server_name: row.server_name,
+    server_ip: row.server_ip,
+    status: row.pm_enabled ? 'Active' : 'Stop',
+    pm_enabled: row.pm_enabled,
+    agent_key: row.agent_key || null,
+    agent_status: row.agent_status || null,
+    last_seen_at: row.last_seen_at || null
+  }));
+}
+
+async function setPmServerEnabled(serverId, enabled) {
+  const result = await pool.query(
+    `
+    UPDATE ${PM_SERVER_TABLE}
+    SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pm_enabled}', to_jsonb($1::boolean), true),
+        updated_at = $2
+    WHERE id = $3
+    RETURNING id
+    `,
+    [Boolean(enabled), getNowIso(), serverId]
+  );
+
+  return result.rows[0] || null;
+}
+
+async function setPmServerEnabledAll(enabled) {
+  const result = await pool.query(
+    `
+    UPDATE ${PM_SERVER_TABLE}
+    SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{pm_enabled}', to_jsonb($1::boolean), true),
+        updated_at = $2
+    `,
+    [Boolean(enabled), getNowIso()]
+  );
+
+  return Number(result.rowCount || 0);
+}
+
+async function isPmServerEnabled(serverId) {
+  const result = await pool.query(
+    `
+    SELECT
+      CASE
+        WHEN LOWER(COALESCE(metadata->>'pm_enabled', '')) IN ('true', 'false') THEN (metadata->>'pm_enabled')::boolean
+        ELSE true
+      END AS pm_enabled
+    FROM ${PM_SERVER_TABLE}
+    WHERE id = $1
+    `,
+    [serverId]
+  );
+
+  if (!result.rows[0]) {
+    return null;
+  }
+  return result.rows[0].pm_enabled !== false;
+}
+
+async function queueManualPmJobsForActiveServers(requestedBy, targetServerId = null) {
+  const params = [];
+  const conditions = [
+    `
+    CASE
+      WHEN LOWER(COALESCE(s.metadata->>'pm_enabled', '')) IN ('true', 'false') THEN (s.metadata->>'pm_enabled')::boolean
+      ELSE true
+    END = true
+    `
+  ];
+
+  if (targetServerId) {
+    params.push(targetServerId);
+    conditions.push(`s.id = $${params.length}`);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const result = await pool.query(
+    `
+    SELECT s.id AS server_id
+    FROM ${PM_SERVER_TABLE} s
+    ${where}
+    ORDER BY s.id ASC
+    `,
+    params
+  );
+
+  if (!result.rows.length) {
+    return [];
+  }
+
+  const jobs = [];
+  for (const row of result.rows) {
+    const job = await createPmJob({
+      serverId: row.server_id,
+      applicationId: null,
+      triggerType: 'MANUAL',
+      requestedBy
+    });
+    jobs.push(job);
+  }
+
+  return jobs;
+}
+
+async function registerOrUpdateAgent({ agentKey, serverId = null, siteCode = 'default-site', capabilities = {} }) {
+  const key = normalizeCode(agentKey || 'agent');
+  const result = await pool.query(
+    `
+    INSERT INTO ${PM_AGENT_TABLE} (agent_key, server_id, site_code, capabilities, last_seen_at, status, created_at, updated_at)
+    VALUES ($1, $2, $3, $4::jsonb, $5, 'ONLINE', $6, $7)
+    ON CONFLICT (agent_key)
+    DO UPDATE SET
+      server_id = COALESCE(EXCLUDED.server_id, ${PM_AGENT_TABLE}.server_id),
+      site_code = EXCLUDED.site_code,
+      capabilities = EXCLUDED.capabilities,
+      last_seen_at = EXCLUDED.last_seen_at,
+      status = 'ONLINE',
+      updated_at = EXCLUDED.updated_at
+    RETURNING id, agent_key, server_id, site_code, capabilities, status, last_seen_at
+    `,
+    [key, serverId, asText(siteCode, 'default-site'), JSON.stringify(toSafeJson(capabilities, {})), getNowIso(), getNowIso(), getNowIso()]
+  );
+  return result.rows[0];
+}
+
+async function heartbeatAgent(agentKey) {
+  const key = normalizeCode(agentKey || 'agent');
+  const updated = await pool.query(
+    `
+    UPDATE ${PM_AGENT_TABLE}
+    SET last_seen_at = $1, status = 'ONLINE', updated_at = $2
+    WHERE agent_key = $3
+    RETURNING id, agent_key, server_id, site_code, capabilities, status, last_seen_at
+    `,
+    [getNowIso(), getNowIso(), key]
+  );
+  if (!updated.rows[0]) {
+    return registerOrUpdateAgent({ agentKey: key });
+  }
+  return updated.rows[0];
+}
+
+async function claimNextPmJob(agentKey) {
+  const key = normalizeCode(agentKey || 'agent');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const agentResult = await client.query(
+      `SELECT id, agent_key, server_id FROM ${PM_AGENT_TABLE} WHERE agent_key = $1 FOR UPDATE`,
+      [key]
+    );
+
+    if (!agentResult.rows[0]) {
+      await client.query('ROLLBACK');
+      return null;
+    }
+
+    const agent = agentResult.rows[0];
+    const jobResult = await client.query(
+      `
+      SELECT id, server_id, application_id, trigger_type, requested_by, requested_at
+      FROM ${PM_JOB_TABLE}
+      WHERE status = 'PENDING'
+        AND (server_id = $1 OR $1 IS NULL)
+      ORDER BY requested_at ASC, id ASC
+      FOR UPDATE SKIP LOCKED
+      LIMIT 1
+      `,
+      [agent.server_id]
+    );
+
+    const job = jobResult.rows[0];
+    if (!job) {
+      await client.query('COMMIT');
+      return null;
+    }
+
+    await client.query(
+      `
+      UPDATE ${PM_JOB_TABLE}
+      SET status = 'RUNNING', assigned_agent_key = $1, started_at = $2, updated_at = $3
+      WHERE id = $4
+      `,
+      [key, getNowIso(), getNowIso(), job.id]
+    );
+
+    await client.query('COMMIT');
+    return {
+      ...job,
+      assigned_agent_key: key,
+      status: 'RUNNING'
+    };
+  } catch (error) {
+    await client.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function completePmJobWithSnapshot({ jobId, agentKey, snapshot, reportTxt = '' }) {
+  const safeSnapshot = toSafeJson(snapshot, {});
+  const snapshotHash = hashSnapshot(safeSnapshot);
+  const now = getNowIso();
+
+  const jobResult = await pool.query(
+    `
+    SELECT j.id, j.server_id, j.application_id, j.trigger_type, j.assigned_agent_key,
+           s.environment_id, e.customer_id
+    FROM ${PM_JOB_TABLE} j
+    JOIN ${PM_SERVER_TABLE} s ON s.id = j.server_id
+    JOIN ${PM_ENVIRONMENT_TABLE} e ON e.id = s.environment_id
+    WHERE j.id = $1
+    `,
+    [jobId]
+  );
+  const job = jobResult.rows[0];
+  if (!job) {
+    throw new Error('PM job not found');
+  }
+
+  if (job.assigned_agent_key && normalizeCode(job.assigned_agent_key) !== normalizeCode(agentKey)) {
+    throw new Error('PM job is assigned to another agent');
+  }
+
+  const snapshotResult = await pool.query(
+    `
+    INSERT INTO ${PM_SNAPSHOT_TABLE}
+      (customer_id, environment_id, server_id, application_id, collected_at, trigger_type, source_agent, snapshot_json, report_txt, hash_sha256, created_at)
+    VALUES
+      ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10, $11)
+    RETURNING id, hash_sha256, collected_at
+    `,
+    [job.customer_id, job.environment_id, job.server_id, job.application_id, now, job.trigger_type, normalizeCode(agentKey), JSON.stringify(safeSnapshot), String(reportTxt || ''), snapshotHash, now]
+  );
+
+  await pool.query(
+    `
+    UPDATE ${PM_JOB_TABLE}
+    SET status = 'SUCCESS', finished_at = $1, snapshot_id = $2, error_detail = NULL, updated_at = $3
+    WHERE id = $4
+    `,
+    [now, snapshotResult.rows[0].id, now, jobId]
+  );
+
+  return snapshotResult.rows[0];
+}
+
+async function failPmJob({ jobId, errorDetail = 'Unknown error' }) {
+  await pool.query(
+    `
+    UPDATE ${PM_JOB_TABLE}
+    SET status = 'FAILED', finished_at = $1, error_detail = $2, updated_at = $3
+    WHERE id = $4
+    `,
+    [getNowIso(), String(errorDetail || 'Unknown error').slice(0, 4000), getNowIso(), jobId]
+  );
 }
 
 async function ensureGroupExists(groupId, displayName, authHeader) {
@@ -1650,6 +2513,636 @@ app.get('/api/reports/audit/services', authMiddleware, async (req, res) => {
     items: result.rows,
     count: result.rows.length
   });
+});
+
+app.post('/api/query-sizing/runs', authMiddleware, async (req, res) => {
+  const user = req.user?.username || req.user?.sub || 'unknown';
+  const normalizedQuery = normalizeAftsQuery(req.body?.query);
+  const queryText = normalizedQuery.normalized;
+
+  if (!queryText) {
+    return res.status(400).json({ message: 'query is required' });
+  }
+
+  if (queryText.length > 8000) {
+    return res.status(400).json({ message: 'query is too long (max 8000 chars)' });
+  }
+
+  const now = getNowIso();
+  const inserted = await pool.query(
+    `
+    INSERT INTO ${QUERY_SIZING_TABLE}
+      (queried_at, username, query_text, status, total_files, total_size_bytes, total_size_mb, total_size_gb, message, created_at, updated_at)
+    VALUES
+      ($1, $2, $3, $4, 0, 0, 0, 0, $5, $6, $7)
+    RETURNING id, queried_at, username, query_text, status, total_files, total_size_bytes, total_size_mb, total_size_gb, message, created_at, updated_at, finished_at
+    `,
+    [
+      now,
+      user,
+      queryText,
+      'IN_PROGRESS',
+      normalizedQuery.hadJsonEscapedQuotes
+        ? `Queued. Backend normalized escaped quotes (\\\" -> \") and uses fixed paging maxItems=${QUERY_SIZING_MAX_ITEMS}`
+        : `Queued. Backend uses fixed paging maxItems=${QUERY_SIZING_MAX_ITEMS}`,
+      now,
+      now
+    ]
+  );
+
+  const run = inserted.rows[0];
+
+  setImmediate(() => {
+    processQuerySizingRun(run.id).catch((error) => {
+      console.error('Unexpected query sizing task error', error);
+    });
+  });
+
+  return res.status(202).json({
+    message: 'Query sizing run accepted',
+    run,
+    maxItems: QUERY_SIZING_MAX_ITEMS,
+    warnings: normalizedQuery.hadJsonEscapedQuotes
+      ? ['Query looked JSON-escaped. Backend normalized \\\" to ".']
+      : []
+  });
+});
+
+app.get('/api/query-sizing/runs/:id', authMiddleware, async (req, res) => {
+  const runId = Number(req.params.id);
+  if (!Number.isFinite(runId) || runId <= 0) {
+    return res.status(400).json({ message: 'Invalid run id' });
+  }
+
+  const result = await pool.query(
+    `
+    SELECT
+      id,
+      queried_at,
+      username,
+      query_text,
+      status,
+      total_files,
+      total_size_bytes,
+      total_size_mb::float8 AS total_size_mb,
+      total_size_gb::float8 AS total_size_gb,
+      message,
+      created_at,
+      updated_at,
+      finished_at
+    FROM ${QUERY_SIZING_TABLE}
+    WHERE id = $1
+    `,
+    [runId]
+  );
+
+  const run = result.rows[0];
+  if (!run) {
+    return res.status(404).json({ message: 'Run not found' });
+  }
+
+  return res.json({ run });
+});
+
+app.get('/api/reports/query-sizing', authMiddleware, async (req, res) => {
+  const pageSize = [10, 30, 100].includes(Number(req.query.pageSize)) ? Number(req.query.pageSize) : 30;
+  const page = toPositiveInt(req.query.page, 1);
+  const offset = (page - 1) * pageSize;
+
+  const countResult = await pool.query(`SELECT COUNT(*)::bigint AS total FROM ${QUERY_SIZING_TABLE}`);
+  const dataResult = await pool.query(
+    `
+    SELECT
+      id,
+      queried_at,
+      username,
+      query_text,
+      status,
+      total_files,
+      total_size_bytes,
+      total_size_mb::float8 AS total_size_mb,
+      total_size_gb::float8 AS total_size_gb,
+      message,
+      created_at,
+      updated_at,
+      finished_at
+    FROM ${QUERY_SIZING_TABLE}
+    ORDER BY id DESC
+    LIMIT $1 OFFSET $2
+    `,
+    [pageSize, offset]
+  );
+
+  return res.json({
+    items: dataResult.rows,
+    total: Number(countResult.rows[0]?.total || 0),
+    page,
+    pageSize,
+    maxItems: QUERY_SIZING_MAX_ITEMS
+  });
+});
+
+app.delete('/api/reports/query-sizing/:id', authMiddleware, async (req, res) => {
+  const runId = Number(req.params.id);
+  if (!Number.isFinite(runId) || runId <= 0) {
+    return res.status(400).json({ message: 'Invalid run id' });
+  }
+
+  const deleted = await pool.query(`DELETE FROM ${QUERY_SIZING_TABLE} WHERE id = $1 RETURNING id`, [runId]);
+  if (!deleted.rows[0]) {
+    return res.status(404).json({ message: 'Run not found' });
+  }
+
+  return res.json({ message: 'Query sizing report deleted', id: runId });
+});
+
+app.get('/api/pm/registry/tree', authMiddleware, async (req, res) => {
+  const result = await pool.query(
+    `
+    SELECT
+      c.id AS customer_id,
+      c.code AS customer_code,
+      c.name AS customer_name,
+      e.id AS environment_id,
+      e.name AS environment_name,
+      s.id AS server_id,
+      s.server_key,
+      s.name AS server_name,
+      s.host AS server_host,
+      s.site_code,
+      a.id AS application_id,
+      a.app_type,
+      a.app_name,
+      a.service_name,
+      a.collector_profile,
+      a.metadata,
+      a.enabled
+    FROM ${PM_CUSTOMER_TABLE} c
+    JOIN ${PM_ENVIRONMENT_TABLE} e ON e.customer_id = c.id
+    JOIN ${PM_SERVER_TABLE} s ON s.environment_id = e.id
+    LEFT JOIN ${PM_APPLICATION_TABLE} a ON a.server_id = s.id
+    ORDER BY c.name, e.name, s.name, a.app_type, a.app_name
+    `
+  );
+
+  return res.json({ items: result.rows, count: result.rows.length });
+});
+
+app.put('/api/pm/registry/upsert', authMiddleware, async (req, res) => {
+  const user = req.user?.username || req.user?.sub || 'unknown';
+  try {
+    const data = await upsertPmRegistryHierarchy(req.body || {}, user);
+    return res.json({ message: 'PM registry updated', ...data });
+  } catch (error) {
+    return res.status(400).json({ message: error?.message || 'Cannot update PM registry' });
+  }
+});
+
+app.post('/api/pm/jobs/dispatch', authMiddleware, async (req, res) => {
+  const user = req.user?.username || req.user?.sub || 'unknown';
+  const serverId = Number(req.body?.serverId);
+  const applicationId = req.body?.applicationId ? Number(req.body.applicationId) : null;
+  const triggerType = asText(req.body?.triggerType, 'MANUAL').toUpperCase();
+
+  if (!Number.isFinite(serverId) || serverId <= 0) {
+    return res.status(400).json({ message: 'serverId is required' });
+  }
+
+  const serverExists = await pool.query(`SELECT id FROM ${PM_SERVER_TABLE} WHERE id = $1`, [serverId]);
+  if (!serverExists.rows[0]) {
+    return res.status(404).json({ message: 'Server not found in PM registry' });
+  }
+
+  const enabled = await isPmServerEnabled(serverId);
+  if (enabled === false) {
+    return res.status(409).json({ message: 'Server is paused. Please start server before dispatch.' });
+  }
+
+  if (applicationId) {
+    const appExists = await pool.query(`SELECT id FROM ${PM_APPLICATION_TABLE} WHERE id = $1 AND server_id = $2`, [applicationId, serverId]);
+    if (!appExists.rows[0]) {
+      return res.status(404).json({ message: 'Application not found for selected server' });
+    }
+  }
+
+  const job = await createPmJob({
+    serverId,
+    applicationId,
+    triggerType,
+    requestedBy: user
+  });
+
+  await safeAddAuditEvent({
+    serviceName: SERVICE_PM,
+    username: user,
+    actionType: 'PM_DISPATCH_JOB',
+    status: 'SUCCESS',
+    message: 'PM job dispatched',
+    entityType: 'pm_job',
+    entityId: String(job.id),
+    metadata: {
+      server_id: serverId,
+      application_id: applicationId,
+      trigger_type: triggerType
+    }
+  });
+
+  return res.status(202).json({ message: 'PM job queued', job });
+});
+
+app.get('/api/pm/center/servers', authMiddleware, async (req, res) => {
+  const items = await listPmCenterServers();
+  return res.json({ items, count: items.length });
+});
+
+app.post('/api/pm/center/servers', authMiddleware, async (req, res) => {
+  const user = req.user?.username || req.user?.sub || 'unknown';
+  const { config } = await getPmConfig();
+
+  const serverIp = asText(req.body?.serverIp, '').trim();
+  if (!serverIp) {
+    return res.status(400).json({ message: 'serverIp is required' });
+  }
+
+  const serverName = asText(req.body?.serverName, serverIp);
+  const serverKey = normalizeCode(req.body?.serverKey || serverIp);
+  const payload = {
+    customer: {
+      code: asText(config.customer, 'customer')
+    },
+    environment: {
+      name: asText(config.environment, 'prod')
+    },
+    server: {
+      serverKey,
+      name: serverName,
+      host: serverIp,
+      siteCode: asText(req.body?.siteCode, 'default-site'),
+      metadata: {
+        pm_enabled: true
+      }
+    },
+    applications: []
+  };
+
+  try {
+    const data = await upsertPmRegistryHierarchy(payload, user);
+    return res.status(201).json({
+      message: 'Server added',
+      server: data.server
+    });
+  } catch (error) {
+    return res.status(400).json({ message: error?.message || 'Cannot add server' });
+  }
+});
+
+app.patch('/api/pm/center/servers/:id/state', authMiddleware, async (req, res) => {
+  const serverId = Number(req.params.id);
+  const enabled = Boolean(req.body?.enabled);
+
+  if (!Number.isFinite(serverId) || serverId <= 0) {
+    return res.status(400).json({ message: 'Invalid server id' });
+  }
+
+  const updated = await setPmServerEnabled(serverId, enabled);
+  if (!updated) {
+    return res.status(404).json({ message: 'Server not found' });
+  }
+
+  return res.json({
+    message: enabled ? 'Server started' : 'Server paused',
+    serverId,
+    enabled
+  });
+});
+
+app.post('/api/pm/center/servers/state-all', authMiddleware, async (req, res) => {
+  const enabled = Boolean(req.body?.enabled);
+  const affected = await setPmServerEnabledAll(enabled);
+  return res.json({
+    message: enabled ? 'All servers started' : 'All servers paused',
+    affected,
+    enabled
+  });
+});
+
+app.delete('/api/pm/center/servers/:id', authMiddleware, async (req, res) => {
+  const serverId = Number(req.params.id);
+  if (!Number.isFinite(serverId) || serverId <= 0) {
+    return res.status(400).json({ message: 'Invalid server id' });
+  }
+
+  const deleted = await pool.query(`DELETE FROM ${PM_SERVER_TABLE} WHERE id = $1 RETURNING id`, [serverId]);
+  if (!deleted.rows[0]) {
+    return res.status(404).json({ message: 'Server not found' });
+  }
+
+  return res.json({ message: 'Server deleted', serverId });
+});
+
+app.post('/api/pm/center/start-manual', authMiddleware, async (req, res) => {
+  const user = req.user?.username || req.user?.sub || 'unknown';
+  const serverId = req.body?.serverId ? Number(req.body.serverId) : null;
+
+  if (serverId !== null && (!Number.isFinite(serverId) || serverId <= 0)) {
+    return res.status(400).json({ message: 'Invalid server id' });
+  }
+
+  const jobs = await queueManualPmJobsForActiveServers(user, serverId);
+  if (!jobs.length) {
+    return res.status(404).json({ message: 'No active server found for manual PM' });
+  }
+
+  return res.status(202).json({
+    message: 'Manual PM jobs queued',
+    count: jobs.length,
+    jobs
+  });
+});
+
+app.get('/api/pm/center/reports', authMiddleware, async (req, res) => {
+  const pageSize = [30, 50, 100].includes(Number(req.query.pageSize)) ? Number(req.query.pageSize) : 30;
+  const page = Math.max(1, Number(req.query.page || 1));
+  const offset = (page - 1) * pageSize;
+  const serverId = req.query.serverId ? Number(req.query.serverId) : null;
+
+  const params = [];
+  const conditions = [];
+  if (serverId) {
+    params.push(serverId);
+    conditions.push(`j.server_id = $${params.length}`);
+  }
+
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  const countSql = `
+    SELECT COUNT(*)::bigint AS total
+    FROM ${PM_JOB_TABLE} j
+    ${where}
+  `;
+  const countResult = await pool.query(countSql, params);
+
+  params.push(pageSize);
+  params.push(offset);
+  const dataSql = `
+    SELECT
+      j.id AS job_id,
+      j.server_id,
+      s.name AS server_name,
+      s.server_key,
+      c.code AS customer_code,
+      e.name AS env,
+      COALESCE(sn.collected_at, j.finished_at, j.started_at, j.requested_at) AS pm_date,
+      j.status,
+      j.error_detail,
+      sn.id AS snapshot_id
+    FROM ${PM_JOB_TABLE} j
+    JOIN ${PM_SERVER_TABLE} s ON s.id = j.server_id
+    JOIN ${PM_ENVIRONMENT_TABLE} e ON e.id = s.environment_id
+    JOIN ${PM_CUSTOMER_TABLE} c ON c.id = e.customer_id
+    LEFT JOIN ${PM_SNAPSHOT_TABLE} sn ON sn.id = j.snapshot_id
+    ${where}
+    ORDER BY j.id DESC
+    LIMIT $${params.length - 1} OFFSET $${params.length}
+  `;
+  const result = await pool.query(dataSql, params);
+
+  return res.json({
+    items: result.rows,
+    total: Number(countResult.rows[0]?.total || 0),
+    page,
+    pageSize
+  });
+});
+
+app.get('/api/pm/snapshots/:id/download-json', authMiddleware, async (req, res) => {
+  const snapshotId = Number(req.params.id);
+  if (!Number.isFinite(snapshotId) || snapshotId <= 0) {
+    return res.status(400).json({ message: 'Invalid snapshot id' });
+  }
+
+  const result = await pool.query(
+    `
+    SELECT sn.id, sn.snapshot_json, c.code AS customer_code, e.name AS env, s.name AS server_name, sn.collected_at
+    FROM ${PM_SNAPSHOT_TABLE} sn
+    JOIN ${PM_CUSTOMER_TABLE} c ON c.id = sn.customer_id
+    JOIN ${PM_ENVIRONMENT_TABLE} e ON e.id = sn.environment_id
+    JOIN ${PM_SERVER_TABLE} s ON s.id = sn.server_id
+    WHERE sn.id = $1
+    `,
+    [snapshotId]
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return res.status(404).json({ message: 'Snapshot not found' });
+  }
+
+  const dateToken = String(row.collected_at || '').slice(0, 10) || 'unknown-date';
+  const filename = toSafeFilename(`${row.customer_code}-${row.env}-${row.server_name}-${dateToken}.json`);
+
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  return res.send(JSON.stringify(row.snapshot_json || {}, null, 2));
+});
+
+app.get('/api/pm/snapshots/:id/download-txt', authMiddleware, async (req, res) => {
+  const snapshotId = Number(req.params.id);
+  if (!Number.isFinite(snapshotId) || snapshotId <= 0) {
+    return res.status(400).json({ message: 'Invalid snapshot id' });
+  }
+
+  const result = await pool.query(
+    `
+    SELECT sn.id, sn.report_txt, c.code AS customer_code, e.name AS env, s.name AS server_name, sn.collected_at
+    FROM ${PM_SNAPSHOT_TABLE} sn
+    JOIN ${PM_CUSTOMER_TABLE} c ON c.id = sn.customer_id
+    JOIN ${PM_ENVIRONMENT_TABLE} e ON e.id = sn.environment_id
+    JOIN ${PM_SERVER_TABLE} s ON s.id = sn.server_id
+    WHERE sn.id = $1
+    `,
+    [snapshotId]
+  );
+
+  const row = result.rows[0];
+  if (!row) {
+    return res.status(404).json({ message: 'Snapshot not found' });
+  }
+
+  const dateToken = String(row.collected_at || '').slice(0, 10) || 'unknown-date';
+  const filename = toSafeFilename(`${row.customer_code}-${row.env}-${row.server_name}-${dateToken}.txt`);
+
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  return res.send(String(row.report_txt || ''));
+});
+
+app.get('/api/pm/jobs', authMiddleware, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 100), 500);
+  const status = req.query.status ? String(req.query.status).toUpperCase() : null;
+
+  const params = [];
+  let where = '';
+  if (status) {
+    params.push(status);
+    where = `WHERE j.status = $${params.length}`;
+  }
+
+  params.push(limit);
+  const result = await pool.query(
+    `
+    SELECT j.id, j.server_id, s.server_key, s.name AS server_name,
+           j.application_id, a.app_type, a.app_name,
+           j.trigger_type, j.requested_by, j.requested_at,
+           j.assigned_agent_key, j.started_at, j.finished_at,
+           j.status, j.snapshot_id, j.error_detail
+    FROM ${PM_JOB_TABLE} j
+    JOIN ${PM_SERVER_TABLE} s ON s.id = j.server_id
+    LEFT JOIN ${PM_APPLICATION_TABLE} a ON a.id = j.application_id
+    ${where}
+    ORDER BY j.id DESC
+    LIMIT $${params.length}
+    `,
+    params
+  );
+
+  return res.json({ items: result.rows, count: result.rows.length });
+});
+
+app.get('/api/pm/snapshots', authMiddleware, async (req, res) => {
+  const limit = Math.min(Number(req.query.limit || 100), 500);
+  const serverId = req.query.server_id ? Number(req.query.server_id) : null;
+  const applicationId = req.query.application_id ? Number(req.query.application_id) : null;
+
+  const params = [];
+  const conditions = [];
+  if (serverId) {
+    params.push(serverId);
+    conditions.push(`sn.server_id = $${params.length}`);
+  }
+  if (applicationId) {
+    params.push(applicationId);
+    conditions.push(`sn.application_id = $${params.length}`);
+  }
+
+  const whereClause = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  params.push(limit);
+
+  const result = await pool.query(
+    `
+    SELECT sn.id, sn.customer_id, c.name AS customer_name,
+           sn.environment_id, e.name AS environment_name,
+           sn.server_id, s.name AS server_name, s.server_key,
+           sn.application_id, a.app_type, a.app_name,
+           sn.collected_at, sn.trigger_type, sn.source_agent,
+           sn.hash_sha256
+    FROM ${PM_SNAPSHOT_TABLE} sn
+    JOIN ${PM_CUSTOMER_TABLE} c ON c.id = sn.customer_id
+    JOIN ${PM_ENVIRONMENT_TABLE} e ON e.id = sn.environment_id
+    JOIN ${PM_SERVER_TABLE} s ON s.id = sn.server_id
+    LEFT JOIN ${PM_APPLICATION_TABLE} a ON a.id = sn.application_id
+    ${whereClause}
+    ORDER BY sn.collected_at DESC
+    LIMIT $${params.length}
+    `,
+    params
+  );
+
+  return res.json({ items: result.rows, count: result.rows.length });
+});
+
+app.post('/api/pm/agents/register', agentAuthMiddleware, async (req, res) => {
+  try {
+    const agent = await registerOrUpdateAgent({
+      agentKey: req.body?.agentKey,
+      serverId: req.body?.serverId ? Number(req.body.serverId) : null,
+      siteCode: req.body?.siteCode,
+      capabilities: req.body?.capabilities
+    });
+    return res.json({ message: 'Agent registered', agent });
+  } catch (error) {
+    return res.status(400).json({ message: error?.message || 'Cannot register agent' });
+  }
+});
+
+app.post('/api/pm/agents/heartbeat', agentAuthMiddleware, async (req, res) => {
+  const agentKey = req.body?.agentKey;
+  if (!agentKey) {
+    return res.status(400).json({ message: 'agentKey is required' });
+  }
+  const agent = await heartbeatAgent(agentKey);
+  return res.json({ status: 'ONLINE', agent });
+});
+
+app.get('/api/pm/agents/jobs/next', agentAuthMiddleware, async (req, res) => {
+  const agentKey = String(req.query.agentKey || '').trim();
+  if (!agentKey) {
+    return res.status(400).json({ message: 'agentKey is required' });
+  }
+
+  const job = await claimNextPmJob(agentKey);
+  if (!job) {
+    return res.status(204).send();
+  }
+
+  let application = null;
+  if (job.application_id) {
+    const appResult = await pool.query(
+      `
+      SELECT id, server_id, app_type, app_name, service_name, collector_profile, metadata
+      FROM ${PM_APPLICATION_TABLE}
+      WHERE id = $1
+      `,
+      [job.application_id]
+    );
+    application = appResult.rows[0] || null;
+  }
+
+  const serverResult = await pool.query(`SELECT id, server_key, name, host, site_code, metadata FROM ${PM_SERVER_TABLE} WHERE id = $1`, [job.server_id]);
+
+  return res.json({
+    job,
+    server: serverResult.rows[0] || null,
+    application
+  });
+});
+
+app.post('/api/pm/agents/jobs/:id/result', agentAuthMiddleware, async (req, res) => {
+  const jobId = Number(req.params.id);
+  const agentKey = req.body?.agentKey;
+
+  if (!Number.isFinite(jobId) || jobId <= 0) {
+    return res.status(400).json({ message: 'Invalid job id' });
+  }
+  if (!agentKey) {
+    return res.status(400).json({ message: 'agentKey is required' });
+  }
+
+  try {
+    const snapshot = await completePmJobWithSnapshot({
+      jobId,
+      agentKey,
+      snapshot: req.body?.snapshot,
+      reportTxt: req.body?.reportTxt
+    });
+
+    return res.json({ message: 'PM job completed', snapshot });
+  } catch (error) {
+    return res.status(400).json({ message: error?.message || 'Cannot complete PM job' });
+  }
+});
+
+app.post('/api/pm/agents/jobs/:id/fail', agentAuthMiddleware, async (req, res) => {
+  const jobId = Number(req.params.id);
+  if (!Number.isFinite(jobId) || jobId <= 0) {
+    return res.status(400).json({ message: 'Invalid job id' });
+  }
+
+  await failPmJob({
+    jobId,
+    errorDetail: req.body?.errorDetail || req.body?.message || 'Agent reported failure'
+  });
+
+  return res.json({ message: 'PM job marked as failed', jobId });
 });
 
 app.get('/api/pm/config', authMiddleware, async (req, res) => {

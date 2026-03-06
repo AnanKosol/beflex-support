@@ -175,6 +175,32 @@ input[type="file"] {
   background: #fff;
 }
 
+input[type="number"],
+select,
+textarea {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  background: #fff;
+  font-family: inherit;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.pm-template-actions {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.pm-template-actions .btn-secondary {
+  padding: 8px 10px;
+}
+
 .actions {
   display: flex;
   gap: 8px;
@@ -456,7 +482,66 @@ td {
 }
 
 .hidden {
-  display: none;
+  display: none !important;
+}
+
+.qs-warning {
+  margin-top: 8px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid #f2d28b;
+  background: #fff8e8;
+  color: #7a5700;
+  font-size: 13px;
+}
+
+.pm-center-card {
+  padding: 14px 20px;
+}
+
+.pm-center-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.pm-center-toggle {
+  border: none;
+  border-radius: 8px;
+  padding: 11px 22px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  background: var(--primary-blue);
+  color: #fff;
+}
+
+.pm-center-toggle.off {
+  background: #7c8794;
+}
+
+.pm-mini-btn {
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
+.pm-message-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+}
+
+.pm-message-dialog {
+  width: min(760px, calc(100vw - 40px));
+  background: var(--white);
+  border-radius: 10px;
+  padding: 16px;
+  border-top: 4px solid var(--primary-green);
 }
 
 @media (max-width: 1100px) {

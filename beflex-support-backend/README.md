@@ -38,3 +38,22 @@ Backend service for beflex-support permission Excel import.
 - `GET /api/tasks/:id/logs` (Bearer token)
 - `GET /api/reports/imports?service_name=permission-import|group-member-import` (Bearer token)
 - `GET /health`
+
+## PM Center APIs (Agent-Controller)
+
+### Center (Bearer token)
+- `GET /api/pm/registry/tree`
+- `PUT /api/pm/registry/upsert`
+- `POST /api/pm/jobs/dispatch`
+- `GET /api/pm/jobs?status=PENDING|RUNNING|SUCCESS|FAILED&limit=100`
+- `GET /api/pm/snapshots?server_id=<id>&application_id=<id>&limit=100`
+
+### Agent (x-agent-token)
+- `POST /api/pm/agents/register`
+- `POST /api/pm/agents/heartbeat`
+- `GET /api/pm/agents/jobs/next?agentKey=<key>`
+- `POST /api/pm/agents/jobs/:id/result`
+- `POST /api/pm/agents/jobs/:id/fail`
+
+### Environment
+- `PM_AGENT_SHARED_TOKEN` (required for PM Agent integration)

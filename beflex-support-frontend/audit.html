@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/support/" />
+    <title>beflex-support | Audit</title>
+    <link rel="stylesheet" href="styles.v3.css?v=20260302-audit1" />
+  </head>
+  <body data-nav-page="audit-service">
+    <div class="sidebar">
+      <div class="logo-area">
+        <div class="logo-placeholder">beflex <span>support</span></div>
+      </div>
+      <div class="nav-links"></div>
+    </div>
+
+    <div class="main-content" data-session-timeout-minutes="30">
+      <header>
+        <div class="breadcrumb">beflex Admin Support / Audit</div>
+        <h1>beflex support - Audit</h1>
+      </header>
+
+      <section class="card">
+        <h3>Session</h3>
+        <div class="actions">
+          <span id="auditLoginStatus" class="status">Authenticated</span>
+          <button class="btn-secondary" id="auditLogoutBtn" type="button">Logout</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Audit Filters</h3>
+        <div class="grid">
+          <div>
+            <label for="auditServiceFilter">Service</label>
+            <select id="auditServiceFilter"></select>
+          </div>
+          <div>
+            <label for="auditStatusFilter">Status</label>
+            <select id="auditStatusFilter">
+              <option value="">All</option>
+              <option value="SUCCESS">SUCCESS</option>
+              <option value="FAILED">FAILED</option>
+              <option value="IN_PROGRESS">IN_PROGRESS</option>
+            </select>
+          </div>
+          <div>
+            <label for="auditUsernameFilter">Username</label>
+            <input id="auditUsernameFilter" type="text" placeholder="bcservice" />
+          </div>
+          <div>
+            <label for="auditLimitFilter">Limit</label>
+            <select id="auditLimitFilter">
+              <option value="50">50</option>
+              <option value="100" selected>100</option>
+              <option value="200">200</option>
+              <option value="500">500</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn-primary" id="auditSearchBtn" type="button">Search</button>
+          <button class="btn-secondary" id="auditClearBtn" type="button">Clear</button>
+          <button class="btn-secondary" id="auditRefreshBtn" type="button">Refresh</button>
+          <span id="auditStatus" class="status">Idle</span>
+        </div>
+        <div id="auditError" class="error"></div>
+      </section>
+
+      <section class="card">
+        <h3>Audit Service Summary</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Service</th>
+              <th>Status</th>
+              <th>Total</th>
+            </tr>
+          </thead>
+          <tbody id="auditServiceSummaryBody"></tbody>
+        </table>
+      </section>
+
+      <section class="card">
+        <h3>Audit Events</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Time</th>
+              <th>Service</th>
+              <th>User</th>
+              <th>Action</th>
+              <th>Entity</th>
+              <th>Status</th>
+              <th>Message</th>
+              <th>Metadata</th>
+            </tr>
+          </thead>
+          <tbody id="auditEventsBody"></tbody>
+        </table>
+      </section>
+    </div>
+
+    <script src="sidebar-nav.js?v=20260306-nav8"></script>
+    <script src="audit-page.js?v=20260302-audit1"></script>
+  </body>
+</html>
