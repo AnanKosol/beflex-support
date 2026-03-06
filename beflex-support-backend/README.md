@@ -12,6 +12,9 @@ Backend service for beflex-support permission Excel import.
 - Audit trail in PostgreSQL Extension DB (`timestamp`, `username`, `action_type`, `filename`, `status`)
 - Task logs and import report APIs
 - Centralized audit events per service (`service_name`, `action_type`, `status`, `metadata`)
+- Query sizing async processing (AFTS query -> total files + total size)
+- Query sizing report paging and delete by run id
+- Query sizing CSV export (all rows or selected rows)
 
 ## Database
 - Uses PostgreSQL from environment: `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`, `PGPASSWORD`
@@ -37,7 +40,17 @@ Backend service for beflex-support permission Excel import.
 - `GET /api/tasks/:id` (Bearer token)
 - `GET /api/tasks/:id/logs` (Bearer token)
 - `GET /api/reports/imports?service_name=permission-import|group-member-import` (Bearer token)
+- `POST /api/query-sizing/runs` (Bearer token)
+- `GET /api/query-sizing/runs/:id` (Bearer token)
+- `GET /api/reports/query-sizing?page=1&pageSize=30` (Bearer token)
+- `DELETE /api/reports/query-sizing/:id` (Bearer token)
+- `GET /api/reports/query-sizing/export.csv` (Bearer token, export all)
+- `POST /api/reports/query-sizing/export.csv` (Bearer token, export selected via `ids[]`)
 - `GET /health`
+
+## Query Sizing Notes
+- Backend calls Alfresco Public Search API with fixed `maxItems=100` per request for stable batching.
+- Incoming queries that contain JSON-escaped quotes (`\\"`) are normalized to `"` before execution.
 
 ## PM Center APIs (Agent-Controller)
 

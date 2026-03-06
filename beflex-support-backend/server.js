@@ -196,6 +196,18 @@ function truncateMessage(value, maxLen = 1000) {
   return text.length <= maxLen ? text : `${text.slice(0, maxLen)}...`;
 }
 
+function csvEscape(value) {
+  const text = String(value ?? '');
+  if (/[",\n\r]/.test(text)) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function toCsv(rows) {
+  return rows.map((row) => row.map((cell) => csvEscape(cell)).join(',')).join('\n');
+}
+
 function normalizeAftsQuery(input) {
   const raw = String(input || '').trim();
   const hadJsonEscapedQuotes = /\\"/.test(raw);
@@ -2640,6 +2652,102 @@ app.get('/api/reports/query-sizing', authMiddleware, async (req, res) => {
     pageSize,
     maxItems: QUERY_SIZING_MAX_ITEMS
   });
+});
+
+app.get('/api/reports/query-sizing/export.csv', authMiddleware, async (req, res) => {
+  const result = await pool.query(
+    `
+    SELECT
+      queried_at,
+      query_text,
+      username,
+      total_files,
+      total_size_mb::float8 AS total_size_mb,
+      total_size_gb::float8 AS total_size_gb,
+      status,
+      message
+    FROM ${QUERY_SIZING_TABLE}
+    ORDER BY id DESC
+    `
+  );
+
+  const rows = [
+    ['Query Date', 'Query Command', 'User', 'Total Files', 'Total size (MB)', 'Total size (GB)', 'Status', 'Message status']
+  ];
+
+  for (const item of result.rows) {
+    rows.push([
+      item.queried_at || '',
+      item.query_text || '',
+      item.username || '',
+      item.total_files ?? 0,
+      item.total_size_mb ?? 0,
+      item.total_size_gb ?? 0,
+      item.status || '',
+      item.message || ''
+    ]);
+  }
+
+  const dateToken = new Date().toISOString().replace(/[:.]/g, '-');
+  const filename = `query-sizing-report-${dateToken}.csv`;
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  return res.send(`\uFEFF${toCsv(rows)}\n`);
+});
+
+app.post('/api/reports/query-sizing/export.csv', authMiddleware, async (req, res) => {
+  const rawIds = Array.isArray(req.body?.ids) ? req.body.ids : [];
+  const ids = rawIds
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .map((value) => Math.floor(value));
+
+  if (!ids.length) {
+    return res.status(400).json({ message: 'ids is required and must contain at least one valid id' });
+  }
+
+  const result = await pool.query(
+    `
+    SELECT
+      queried_at,
+      query_text,
+      username,
+      total_files,
+      total_size_mb::float8 AS total_size_mb,
+      total_size_gb::float8 AS total_size_gb,
+      status,
+      message
+    FROM ${QUERY_SIZING_TABLE}
+    WHERE id = ANY($1::bigint[])
+    ORDER BY id DESC
+    `,
+    [ids]
+  );
+
+  const rows = [
+    ['Query Date', 'Query Command', 'User', 'Total Files', 'Total size (MB)', 'Total size (GB)', 'Status', 'Message status']
+  ];
+
+  for (const item of result.rows) {
+    rows.push([
+      item.queried_at || '',
+      item.query_text || '',
+      item.username || '',
+      item.total_files ?? 0,
+      item.total_size_mb ?? 0,
+      item.total_size_gb ?? 0,
+      item.status || '',
+      item.message || ''
+    ]);
+  }
+
+  const dateToken = new Date().toISOString().replace(/[:.]/g, '-');
+  const filename = `query-sizing-report-selected-${dateToken}.csv`;
+
+  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  return res.send(`\uFEFF${toCsv(rows)}\n`);
 });
 
 app.delete('/api/reports/query-sizing/:id', authMiddleware, async (req, res) => {

@@ -70,40 +70,60 @@
       </section>
 
       <section class="card">
-        <h3>Audit Service Summary</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Service</th>
-              <th>Status</th>
-              <th>Total</th>
-            </tr>
-          </thead>
-          <tbody id="auditServiceSummaryBody"></tbody>
-        </table>
+        <details class="guide-collapsible">
+          <summary class="guide-toggle">Audit Service Summary</summary>
+          <div class="guide-content">
+            <table>
+              <thead>
+                <tr>
+                  <th>Service</th>
+                  <th>Status</th>
+                  <th>Total</th>
+                </tr>
+              </thead>
+              <tbody id="auditServiceSummaryBody"></tbody>
+            </table>
+          </div>
+        </details>
       </section>
 
       <section class="card">
-        <h3>Audit Events</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Time</th>
-              <th>Service</th>
-              <th>User</th>
-              <th>Action</th>
-              <th>Entity</th>
-              <th>Status</th>
-              <th>Message</th>
-              <th>Metadata</th>
-            </tr>
-          </thead>
-          <tbody id="auditEventsBody"></tbody>
-        </table>
+        <details class="guide-collapsible">
+          <summary class="guide-toggle">Audit Events</summary>
+          <div class="guide-content">
+            <table>
+              <thead>
+                <tr>
+                  <th>Time</th>
+                  <th>Service</th>
+                  <th>User</th>
+                  <th>Action</th>
+                  <th>Entity</th>
+                  <th>Status</th>
+                  <th>Message</th>
+                  <th>Metadata</th>
+                </tr>
+              </thead>
+              <tbody id="auditEventsBody"></tbody>
+            </table>
+
+            <div class="actions">
+              <label for="auditEventsPageSize" style="margin: 0;">Paging</label>
+              <select id="auditEventsPageSize">
+                <option value="10">10</option>
+                <option value="30" selected>30</option>
+                <option value="100">100</option>
+              </select>
+              <button class="btn-secondary" id="auditEventsPrevPageBtn" type="button">Prev</button>
+              <button class="btn-secondary" id="auditEventsNextPageBtn" type="button">Next</button>
+              <span id="auditEventsPagingLabel" class="status">Page 1 / 1</span>
+            </div>
+          </div>
+        </details>
       </section>
     </div>
 
     <script src="sidebar-nav.js?v=20260306-nav8"></script>
-    <script src="audit-page.js?v=20260302-audit1"></script>
+    <script src="audit-page.js?v=20260306-audit2"></script>
   </body>
 </html>

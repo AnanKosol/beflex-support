@@ -30,36 +30,41 @@
       </section>
 
       <section class="card">
-        <h3>Run Query</h3>
-        <p class="muted">ส่ง Query ไปยัง Alfresco Search API ผ่าน backend เพื่อคำนวณจำนวนไฟล์และขนาดรวม โดย frontend แสดงผล realtime จากสถานะที่ backend อัปเดต</p>
-
-        <details class="guide-collapsible" open>
-          <summary class="guide-toggle">Query ตัวอย่างสำหรับ Copy</summary>
+        <details class="guide-collapsible">
+          <summary class="guide-toggle">Run Query</summary>
           <div class="guide-content">
-            <div class="guide-note guide-note-accent">
-              <h4>Example 1</h4>
-              <div class="markdown-sample" id="qsExample1">ERC:DocType:ReportFile and TAG:ocrtimeout AND PATH:"/app:company_home/st:sites/cm:erc/cm:documentLibrary/cm:e-Meeting//." AND TYPE:"cm:content"</div>
-              <h4>Example 2</h4>
-              <div class="markdown-sample" id="qsExample2">PATH:"/app:company_home/st:sites//." AND TYPE:"cm:content"</div>
-              <h4>Example 3</h4>
-              <div class="markdown-sample" id="qsExample3">Demo:DocType:ReportFile and TAG:ocrtimeout AND PATH:"/app:company_home/st:sites/cm:demo/cm:documentLibrary//." AND TYPE:"cm:content"</div>
-              <p class="muted">หมายเหตุ: backend กำหนด paging แบบคงที่ <b>maxItems = 100</b> เพื่อคุมโหลดระบบและความเสถียรของการ query ขนาดใหญ่</p>
+            <p class="muted">ส่ง Query ไปยัง Alfresco Search API ผ่าน backend เพื่อคำนวณจำนวนไฟล์และขนาดรวม โดย frontend แสดงผล realtime จากสถานะที่ backend อัปเดต</p>
+
+            <details class="guide-collapsible" open>
+              <summary class="guide-toggle">Query ตัวอย่างสำหรับ Copy</summary>
+              <div class="guide-content">
+                <div class="guide-note guide-note-accent">
+                  <h4>Example 1</h4>
+                  <div class="markdown-sample" id="qsExample1">TYPE:"cm:folder" AND NTL:ProductGroup:"Insurance" AND NTL:DocTypeId:"12"</div>
+                  <h4>Example 2</h4>
+                  <div class="markdown-sample" id="qsExample2">ANCESTOR:"workspace://SpacesStore/{{UUID_FOLDER}}" AND TYPE:"cm:content" AND NOT (ASPECT:"sys:hidden" OR TYPE:"cm:thumbnail" OR TYPE:"cm:failedThumbnail")</div>
+                  <p class="muted">* `{{UUID_FOLDER}}` คือ UUID ของโฟลเดอร์</p>
+                  <h4>Example 3</h4>
+                  <div class="markdown-sample" id="qsExample3">PATH:"/app:company_home//*" AND TYPE:"cm:content" AND cm:modifier:"erctransfer" AND cm:created:[2024-08-27T00:00:00 TO 2024-08-29T23:59:59]</div>
+                  <p class="muted">หมายเหตุ: backend กำหนด paging แบบคงที่ <b>maxItems = 100</b> เพื่อคุมโหลดระบบและความเสถียรของการ query ขนาดใหญ่</p>
+                </div>
+              </div>
+            </details>
+
+            <label for="qsQueryInput">AFTS Query</label>
+            <textarea id="qsQueryInput" rows="5" placeholder="ใส่ query เช่น PATH:&quot;/app:company_home/st:sites//.&quot; AND TYPE:&quot;cm:content&quot;"></textarea>
+            <div id="qsQueryWarning" class="qs-warning hidden"></div>
+
+            <div class="actions">
+              <button class="btn-secondary" id="qsUseExample1Btn" type="button">Use Example 1</button>
+              <button class="btn-secondary" id="qsUseExample2Btn" type="button">Use Example 2</button>
+              <button class="btn-secondary" id="qsUseExample3Btn" type="button">Use Example 3</button>
+              <button class="btn-primary" id="qsRunBtn" type="button">Run Query</button>
+              <span id="qsRunStatus" class="status">Idle</span>
             </div>
+            <div id="qsRunError" class="error"></div>
           </div>
         </details>
-
-        <label for="qsQueryInput">AFTS Query</label>
-        <textarea id="qsQueryInput" rows="5" placeholder="ใส่ query เช่น PATH:&quot;/app:company_home/st:sites//.&quot; AND TYPE:&quot;cm:content&quot;"></textarea>
-        <div id="qsQueryWarning" class="qs-warning hidden"></div>
-
-        <div class="actions">
-          <button class="btn-secondary" id="qsUseExample1Btn" type="button">Use Example 1</button>
-          <button class="btn-secondary" id="qsUseExample2Btn" type="button">Use Example 2</button>
-          <button class="btn-secondary" id="qsUseExample3Btn" type="button">Use Example 3</button>
-          <button class="btn-primary" id="qsRunBtn" type="button">Run Query</button>
-          <span id="qsRunStatus" class="status">Idle</span>
-        </div>
-        <div id="qsRunError" class="error"></div>
       </section>
 
       <section class="card">
@@ -70,9 +75,24 @@
 
       <section class="card">
         <h3>Query Report</h3>
+        <div class="actions" style="margin-top: 8px; margin-bottom: 10px;">
+          <button class="btn-secondary" id="qsCheckAllBtn" type="button">Check all</button>
+          <button class="btn-secondary" id="qsUncheckPageBtn" type="button">Uncheck page</button>
+          <button class="btn-secondary" id="qsClearSelectedBtn" type="button">Clear selected</button>
+          <button class="btn-secondary" id="qsExportSelectedCsvBtn" type="button">Export selected CSV</button>
+          <button class="btn-secondary" id="qsExportCsvBtn" type="button">Export all CSV</button>
+          <span id="qsSelectedCount" class="status">Selected 0</span>
+        </div>
+
         <table>
           <thead>
             <tr>
+              <th class="qs-select-cell-head">
+                <label for="qsSelectAllPageCb" style="display:inline-flex;align-items:center;gap:6px;margin:0;font-weight:600;">
+                  <input id="qsSelectAllPageCb" type="checkbox" title="Select all rows on this page" />
+                  Select
+                </label>
+              </th>
               <th>Query Date</th>
               <th>Query Command</th>
               <th>User</th>
@@ -101,6 +121,6 @@
     </div>
 
     <script src="sidebar-nav.js?v=20260306-nav8"></script>
-    <script src="query-sizing-page.js?v=20260306-query-sizing1"></script>
+    <script src="query-sizing-page.js?v=20260306-query-sizing2"></script>
   </body>
 </html>

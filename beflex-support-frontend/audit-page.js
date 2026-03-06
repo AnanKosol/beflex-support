@@ -13,11 +13,18 @@ const elements = {
   status: document.getElementById('auditStatus'),
   error: document.getElementById('auditError'),
   serviceSummaryBody: document.getElementById('auditServiceSummaryBody'),
-  eventsBody: document.getElementById('auditEventsBody')
+  eventsBody: document.getElementById('auditEventsBody'),
+  eventsPageSize: document.getElementById('auditEventsPageSize'),
+  eventsPrevPageBtn: document.getElementById('auditEventsPrevPageBtn'),
+  eventsNextPageBtn: document.getElementById('auditEventsNextPageBtn'),
+  eventsPagingLabel: document.getElementById('auditEventsPagingLabel')
 };
 
 let token = localStorage.getItem('allopsToken') || '';
 let idleTimer = null;
+let allEventItems = [];
+let eventsPage = 1;
+let eventsTotalPages = 1;
 
 const idleTimeoutMinutes = Number(document.querySelector('.main-content')?.dataset?.sessionTimeoutMinutes || 30);
 const idleTimeoutMs = idleTimeoutMinutes * 60 * 1000;
@@ -144,15 +151,40 @@ function renderSummary(items) {
   });
 }
 
+function updateEventsPaging(totalItems) {
+  const pageSize = Number(elements.eventsPageSize?.value || 30);
+  eventsTotalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  if (eventsPage > eventsTotalPages) {
+    eventsPage = eventsTotalPages;
+  }
+
+  if (elements.eventsPagingLabel) {
+    elements.eventsPagingLabel.textContent = `Page ${eventsPage} / ${eventsTotalPages}`;
+  }
+  if (elements.eventsPrevPageBtn) {
+    elements.eventsPrevPageBtn.disabled = eventsPage <= 1;
+  }
+  if (elements.eventsNextPageBtn) {
+    elements.eventsNextPageBtn.disabled = eventsPage >= eventsTotalPages;
+  }
+}
+
 function renderEvents(items) {
   elements.eventsBody.innerHTML = '';
 
-  if (!items.length) {
+  const safeItems = Array.isArray(items) ? items : [];
+  updateEventsPaging(safeItems.length);
+
+  if (!safeItems.length) {
     elements.eventsBody.innerHTML = '<tr><td colspan="8">No audit events</td></tr>';
     return;
   }
 
-  items.forEach((item) => {
+  const pageSize = Number(elements.eventsPageSize?.value || 30);
+  const startIndex = (eventsPage - 1) * pageSize;
+  const pageItems = safeItems.slice(startIndex, startIndex + pageSize);
+
+  pageItems.forEach((item) => {
     const metadata = item.metadata && typeof item.metadata === 'object'
       ? JSON.stringify(item.metadata, null, 2)
       : '';
@@ -192,10 +224,11 @@ async function loadAuditPage() {
 
     const summaryItems = Array.isArray(summaryResult.items) ? summaryResult.items : [];
     const eventItems = Array.isArray(eventsResult.items) ? eventsResult.items : [];
+    allEventItems = eventItems;
 
     renderServiceFilter(summaryItems);
     renderSummary(summaryItems);
-    renderEvents(eventItems);
+    renderEvents(allEventItems);
     setStatus(`Loaded ${eventItems.length} events`, 'completed');
   } catch (error) {
     setError(error.message);
@@ -247,11 +280,33 @@ function bindEvents() {
     loadAuditPage();
   });
 
+  elements.eventsPageSize.addEventListener('change', () => {
+    eventsPage = 1;
+    renderEvents(allEventItems);
+  });
+
+  elements.eventsPrevPageBtn.addEventListener('click', () => {
+    if (eventsPage <= 1) {
+      return;
+    }
+    eventsPage -= 1;
+    renderEvents(allEventItems);
+  });
+
+  elements.eventsNextPageBtn.addEventListener('click', () => {
+    if (eventsPage >= eventsTotalPages) {
+      return;
+    }
+    eventsPage += 1;
+    renderEvents(allEventItems);
+  });
+
   elements.clearBtn.addEventListener('click', () => {
     elements.serviceFilter.value = '';
     elements.statusFilter.value = '';
     elements.usernameFilter.value = '';
     elements.limitFilter.value = '100';
+    eventsPage = 1;
     loadAuditPage();
   });
 }

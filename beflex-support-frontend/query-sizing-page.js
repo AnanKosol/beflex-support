@@ -11,9 +11,16 @@ const elements = {
   runMeta: document.getElementById('qsRunMeta'),
   realtimeBox: document.getElementById('qsRealtimeBox'),
   reportBody: document.getElementById('qsReportBody'),
+  selectAllPageCb: document.getElementById('qsSelectAllPageCb'),
   pageSize: document.getElementById('qsPageSize'),
+  checkAllBtn: document.getElementById('qsCheckAllBtn'),
+  uncheckPageBtn: document.getElementById('qsUncheckPageBtn'),
+  clearSelectedBtn: document.getElementById('qsClearSelectedBtn'),
+  exportSelectedCsvBtn: document.getElementById('qsExportSelectedCsvBtn'),
+  exportCsvBtn: document.getElementById('qsExportCsvBtn'),
   prevPageBtn: document.getElementById('qsPrevPageBtn'),
   nextPageBtn: document.getElementById('qsNextPageBtn'),
+  selectedCount: document.getElementById('qsSelectedCount'),
   pagingLabel: document.getElementById('qsPagingLabel'),
   useExample1Btn: document.getElementById('qsUseExample1Btn'),
   useExample2Btn: document.getElementById('qsUseExample2Btn'),
@@ -29,6 +36,8 @@ let pollingTimer = null;
 let idleTimer = null;
 let currentPage = 1;
 let totalPages = 1;
+let currentPageRunIds = [];
+const selectedRunIds = new Set();
 
 const idleTimeoutMinutes = Number(document.querySelector('.main-content')?.dataset?.sessionTimeoutMinutes || 30);
 const idleTimeoutMs = idleTimeoutMinutes * 60 * 1000;
@@ -164,6 +173,102 @@ async function callApi(path, options = {}) {
   return data;
 }
 
+function updateSelectedCount() {
+  if (!elements.selectedCount) {
+    return;
+  }
+  elements.selectedCount.textContent = `Selected ${selectedRunIds.size}`;
+}
+
+function syncSelectAllPageCheckbox() {
+  if (!elements.selectAllPageCb) {
+    return;
+  }
+
+  if (!currentPageRunIds.length) {
+    elements.selectAllPageCb.checked = false;
+    elements.selectAllPageCb.indeterminate = false;
+    return;
+  }
+
+  const selectedOnPage = currentPageRunIds.filter((id) => selectedRunIds.has(id)).length;
+  elements.selectAllPageCb.checked = selectedOnPage > 0 && selectedOnPage === currentPageRunIds.length;
+  elements.selectAllPageCb.indeterminate = selectedOnPage > 0 && selectedOnPage < currentPageRunIds.length;
+}
+
+function setCurrentPageSelection(checked) {
+  currentPageRunIds.forEach((id) => {
+    if (checked) {
+      selectedRunIds.add(id);
+    } else {
+      selectedRunIds.delete(id);
+    }
+  });
+
+  document.querySelectorAll('.qs-row-select').forEach((input) => {
+    input.checked = checked;
+  });
+
+  updateSelectedCount();
+  syncSelectAllPageCheckbox();
+}
+
+async function downloadReportCsv(selectedIds = null) {
+  const headers = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const options = { headers, method: 'GET' };
+
+  if (Array.isArray(selectedIds)) {
+    options.method = 'POST';
+    options.headers = {
+      ...headers,
+      'Content-Type': 'application/json'
+    };
+    options.body = JSON.stringify({ ids: selectedIds });
+  }
+
+  const response = await fetch(`${apiBase}/reports/query-sizing/export.csv`, options);
+
+  if (response.status === 401) {
+    clearSession();
+    stopPolling();
+    stopIdleTimeout();
+    sessionStorage.setItem('allopsSessionExpired', '1');
+    navigateToLogin();
+    throw new Error('Session expired');
+  }
+
+  if (!response.ok) {
+    let message = `Export failed: ${response.status}`;
+    try {
+      const data = await response.json();
+      if (data?.message) {
+        message = data.message;
+      }
+    } catch (_error) {
+      // keep fallback message
+    }
+    throw new Error(message);
+  }
+
+  const blob = await response.blob();
+  const disposition = response.headers.get('content-disposition') || '';
+  const matched = disposition.match(/filename="([^"]+)"/i);
+  const filename = matched?.[1] || 'query-sizing-report.csv';
+
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  URL.revokeObjectURL(objectUrl);
+}
+
 function renderRealtime(run) {
   if (!run) {
     elements.runMeta.textContent = 'No run selected';
@@ -191,18 +296,28 @@ function renderRealtime(run) {
 
 function renderReports(items) {
   elements.reportBody.innerHTML = '';
+  currentPageRunIds = [];
 
   if (!items.length) {
-    elements.reportBody.innerHTML = '<tr><td colspan="8">No report data</td></tr>';
+    elements.reportBody.innerHTML = '<tr><td colspan="9">No report data</td></tr>';
+    updateSelectedCount();
+    syncSelectAllPageCheckbox();
     return;
   }
 
   items.forEach((item) => {
+    const runId = Number(item.id);
+    if (Number.isFinite(runId) && runId > 0) {
+      currentPageRunIds.push(runId);
+    }
+
     const tr = document.createElement('tr');
     const statusText = item.status || '-';
     const message = item.message || '-';
+    const checked = selectedRunIds.has(runId) ? 'checked' : '';
 
     tr.innerHTML = `
+      <td class="qs-select-cell"><input class="qs-row-select" data-run-id="${item.id}" type="checkbox" ${checked} /></td>
       <td>${escapeHtml(formatTime(item.queried_at))}</td>
       <td title="${escapeHtml(item.query_text || '')}">${escapeHtml(shortenQuery(item.query_text))}</td>
       <td>${escapeHtml(item.username || '-')}</td>
@@ -216,6 +331,24 @@ function renderReports(items) {
     `;
 
     elements.reportBody.appendChild(tr);
+  });
+
+  document.querySelectorAll('.qs-row-select').forEach((input) => {
+    input.addEventListener('change', () => {
+      const runId = Number(input.getAttribute('data-run-id'));
+      if (!Number.isFinite(runId) || runId <= 0) {
+        return;
+      }
+
+      if (input.checked) {
+        selectedRunIds.add(runId);
+      } else {
+        selectedRunIds.delete(runId);
+      }
+
+      updateSelectedCount();
+      syncSelectAllPageCheckbox();
+    });
   });
 
   document.querySelectorAll('.qs-delete-btn').forEach((button) => {
@@ -232,6 +365,7 @@ function renderReports(items) {
 
       try {
         await callApi(`/reports/query-sizing/${runId}`, { method: 'DELETE' });
+        selectedRunIds.delete(runId);
         if (currentRunId === runId) {
           currentRunId = null;
           stopPolling();
@@ -243,6 +377,9 @@ function renderReports(items) {
       }
     });
   });
+
+  updateSelectedCount();
+  syncSelectAllPageCheckbox();
 }
 
 function updatePaging(page, total, pageSize) {
@@ -368,6 +505,49 @@ function bindEvents() {
     loadReports(1).catch((error) => {
       setRunError(error.message);
     });
+  });
+
+  elements.selectAllPageCb.addEventListener('change', () => {
+    setCurrentPageSelection(elements.selectAllPageCb.checked);
+  });
+
+  elements.checkAllBtn.addEventListener('click', () => {
+    setCurrentPageSelection(true);
+  });
+
+  elements.uncheckPageBtn.addEventListener('click', () => {
+    setCurrentPageSelection(false);
+  });
+
+  elements.clearSelectedBtn.addEventListener('click', () => {
+    selectedRunIds.clear();
+    document.querySelectorAll('.qs-row-select').forEach((input) => {
+      input.checked = false;
+    });
+    updateSelectedCount();
+    syncSelectAllPageCheckbox();
+  });
+
+  elements.exportSelectedCsvBtn.addEventListener('click', async () => {
+    try {
+      setRunError('');
+      if (!selectedRunIds.size) {
+        setRunError('กรุณาเลือกรายการก่อน export CSV');
+        return;
+      }
+      await downloadReportCsv(Array.from(selectedRunIds));
+    } catch (error) {
+      setRunError(error.message);
+    }
+  });
+
+  elements.exportCsvBtn.addEventListener('click', async () => {
+    try {
+      setRunError('');
+      await downloadReportCsv(null);
+    } catch (error) {
+      setRunError(error.message);
+    }
   });
 
   elements.prevPageBtn.addEventListener('click', () => {
