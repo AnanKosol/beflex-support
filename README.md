@@ -13,8 +13,19 @@ Repository นี้คัดเฉพาะส่วน **beflex-support servic
 1. คัดลอก `.env.example` เป็น `.env`
 2. กรอกค่า Extension DB + Alfresco + credential manager
 3. รัน:
-   docker compose up -d --build
+   docker compose up -d
 4. เปิดใช้งาน: http://localhost:8088/support/
+
+หมายเหตุสำคัญของ compose (sync กับ `/opt/beflex-workspace`):
+- ใช้ image tag (`BEFLEX_SUPPORT_BACKEND_TAG`, `BEFLEX_SUPPORT_FRONTEND_TAG`) แทนการ build ใน compose
+- `beflex-support-frontend` ไม่ bind mount ไฟล์หน้าเว็บจาก host แล้ว (เสิร์ฟไฟล์จาก image)
+- backend mount เฉพาะ upload path: `${DATA_VOLUME}/support-uploads:/app/uploads`
+
+ถ้าต้องการ build image ใหม่ก่อนรัน compose:
+```bash
+docker build -t reg.bcecm.com/support/beflex-support-backend:0.0.3 ./beflex-support-backend
+docker build -t reg.bcecm.com/support/beflex-support-frontend:0.0.3 ./beflex-support-frontend
+```
 
 หมายเหตุ frontend route:
 - หน้า frontend ของ beflex-support ถูกเสิร์ฟที่ path `/support/` ดังนั้น `index.html` ต้องใช้ `<base href="/support/">`
@@ -26,7 +37,20 @@ Repository นี้คัดเฉพาะส่วน **beflex-support servic
 - `group-service.html` : Import User to Group (.xlsx)
 - `user-csv-service.html` : Create/Update User from CSV (.csv)
 - `pm.html` : PM report (server/alfresco detail by script), schedule, retention, manual run
+- `audit.html` : Audit report (service summary + event log)
+- `query-sizing.html` : Query Search API เพื่อสรุปจำนวนไฟล์และขนาดรวม
 - `support-other.html` : รวมลิงก์บริการที่เกี่ยวข้อง
+
+### Page behavior (ล่าสุด)
+
+- `audit.html`
+   - `Audit Service Summary` หุบ/ขยายได้ (default: หุบ)
+   - `Audit Events` หุบ/ขยายได้ (default: หุบ)
+   - `Audit Events` มี paging `10 / 30 / 100` พร้อม `Prev/Next`
+- `query-sizing.html`
+   - `Run Query` หุบ/ขยายได้ (default: หุบ)
+   - `Query Report` รองรับเลือกหลายรายการข้ามหน้า
+   - ปุ่มใน `Query Report`: `Check all`, `Uncheck page`, `Clear selected`, `Export selected CSV`, `Export all CSV`
 
 ## Login policy
 
@@ -43,6 +67,17 @@ Repository นี้คัดเฉพาะส่วน **beflex-support servic
 - `GET /api/beflex-support/pm/runs` : PM run history (`errors_only=true` for error tier)
 - `GET /api/beflex-support/tasks/:id` : task status
 - `GET /api/beflex-support/tasks/:id/logs` : task logs
+- `POST /api/beflex-support/query-sizing/runs` : เริ่มงาน query sizing (async)
+- `GET /api/beflex-support/query-sizing/runs/:id` : ดูสถานะงาน query sizing
+- `GET /api/beflex-support/reports/query-sizing` : report query sizing (paging 10/30/100)
+- `DELETE /api/beflex-support/reports/query-sizing/:id` : ลบ report รายการเดียว
+- `GET /api/beflex-support/reports/query-sizing/export.csv` : export query sizing ทั้งหมด (CSV)
+- `POST /api/beflex-support/reports/query-sizing/export.csv` : export query sizing ตามรายการที่เลือก (`ids[]`)
+
+Query sizing notes:
+- backend fix paging เป็น `maxItems=100` ต่อรอบเพื่อคุมโหลด
+- ถ้า query ที่กรอกมาเป็นรูปแบบ JSON-escaped (`\\"`) ระบบจะ normalize อัตโนมัติเป็น `"` ก่อนยิง Alfresco API
+- หน้า frontend แสดง warning เมื่อ query ดูเป็น JSON-escaped
 
 PM feature summary:
 - ใช้ script `pm_bc.sh` เพื่อเก็บข้อมูล server/alfresco report

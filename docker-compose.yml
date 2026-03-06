@@ -1,14 +1,14 @@
 services:
   beflex-support-backend:
-    build:
-      context: ./beflex-support-backend
-    container_name: beflex-support-backend
+    image: reg.bcecm.com/support/beflex-support-backend:${BEFLEX_SUPPORT_BACKEND_TAG:-0.0.3}
+    container_name: beflex-support-repo-backend
     restart: always
+    mem_limit: ${MEM_LIMIT_BEFLEX_SUPPORT_BACKEND:-256}m
     environment:
       - TZ=Asia/Bangkok
       - PORT=3000
-      - ALFRESCO_BASE_URL=${ALFRESCO_BASE_URL}
-      - PERMISSION_SERVICE_URL=${PERMISSION_SERVICE_URL}
+      - ALFRESCO_BASE_URL=${ALFRESCO_BASE_URL:-http://alfresco:8080}
+      - PERMISSION_SERVICE_URL=${PERMISSION_SERVICE_URL:-http://permission-service/api/Excel/PostFile}
       - ALLOPS_REQUIRED_GROUP=GROUP_SUPPORT_WORKSPCE
       - ALLOPS_JWT_SECRET=${ALLOPS_JWT_SECRET}
       - ALLOPS_UPLOAD_DIR=/app/uploads
@@ -19,25 +19,24 @@ services:
       - PGDATABASE=${EXTENSION_DB_NAME}
       - PGUSER=${EXTENSION_DB_PGUSER}
       - PGPASSWORD=${EXTENSION_DB_PGPASSWORD}
-      - CREDENTIAL_MANAGER_URL=${CREDENTIAL_MANAGER_URL}
+      - CREDENTIAL_MANAGER_URL=${CREDENTIAL_MANAGER_URL:-http://credential-manager-backend:3900}
       - CREDENTIAL_MANAGER_TOKEN=${CREDENTIAL_MANAGER_BACKEND_STATIC_API_TOKEN}
-      - CREDENTIAL_SERVICE_NAME=alfresco
-      - CREDENTIAL_USERNAME_ID=1
-      - CREDENTIAL_PASSWORD_ID=2
     volumes:
-      - ./data/uploads:/app/uploads
+      - ${DATA_VOLUME:-./data}/support-uploads:/app/uploads
 
   beflex-support-frontend:
-    build:
-      context: ./beflex-support-frontend
-    container_name: beflex-support-frontend
+    image: reg.bcecm.com/support/beflex-support-frontend:${BEFLEX_SUPPORT_FRONTEND_TAG:-0.0.3}
+    container_name: beflex-support-repo-frontend
     restart: always
+    mem_limit: ${MEM_LIMIT_BEFLEX_SUPPORT_FRONTEND:-128}m
+    environment:
+      - TZ=Asia/Bangkok
     depends_on:
       - beflex-support-backend
 
   beflex-support-proxy:
-    image: nginx:1.25.4
-    container_name: beflex-support-proxy
+    image: nginx:${NGINX_TAG:-1.25.4}
+    container_name: beflex-support-repo-proxy
     restart: always
     depends_on:
       - beflex-support-frontend
