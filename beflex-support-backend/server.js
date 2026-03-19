@@ -13,6 +13,7 @@ const cron = require('node-cron');
 const crypto = require('crypto');
 const { createAlfrescoAuthProvider } = require('./services/alfresco-auth-provider');
 const { runPmReport } = require('./scripts/pm-report');
+const { registerQueryPermissionRoutes } = require('./routes/query-permission-routes');
 
 dotenv.config();
 
@@ -58,9 +59,22 @@ const SERVICE_GROUP_MEMBER_IMPORT = 'group-member-import';
 const SERVICE_USER_CSV_IMPORT = 'user-csv-import';
 const SERVICE_PM = 'pm-service';
 const SERVICE_QUERY_SIZING = 'query-sizing';
+const SERVICE_QUERY_ADD_PERMISSION = 'query-add-permission';
 const QUERY_SIZING_TABLE = 'allops_raku_query_sizing_reports';
 const QUERY_SIZING_MAX_ITEMS = 100;
 const QUERY_SIZING_PAGE_DELAY_MS = Number(process.env.QUERY_SIZING_PAGE_DELAY_MS || 150);
+const QUERY_PERMISSION_TEMPLATE_TABLE = 'allops_raku_permission_templates';
+const QUERY_PERMISSION_RUN_TABLE = 'allops_raku_permission_query_runs';
+const QUERY_PERMISSION_RUN_ITEM_TABLE = 'allops_raku_permission_query_run_items';
+const QUERY_PERMISSION_SETTINGS_TABLE = 'allops_raku_query_permission_settings';
+const QUERY_PERMISSION_MAX_ITEMS = 100;
+const QUERY_PERMISSION_PAGE_DELAY_MS = Number(process.env.QUERY_PERMISSION_PAGE_DELAY_MS || 150);
+const QUERY_PERMISSION_RETENTION_DAYS = Number(process.env.QUERY_PERMISSION_RETENTION_DAYS || 2);
+const QUERY_PERMISSION_ADD_CONCURRENCY = Math.max(1, Number(process.env.QUERY_PERMISSION_ADD_CONCURRENCY || 5));
+const QUERY_PERMISSION_ADD_MAX_RETRIES = Math.max(0, Number(process.env.QUERY_PERMISSION_ADD_MAX_RETRIES || 2));
+const QUERY_PERMISSION_ADD_RETRY_BASE_MS = Math.max(100, Number(process.env.QUERY_PERMISSION_ADD_RETRY_BASE_MS || 500));
+const QUERY_PERMISSION_DETAIL_RETENTION_DAYS = Math.max(1, Number(process.env.QUERY_PERMISSION_DETAIL_RETENTION_DAYS || 30));
+const QUERY_PERMISSION_DETAIL_CLEANUP_CRON = process.env.QUERY_PERMISSION_DETAIL_CLEANUP_CRON || '30 2 * * *';
 const PM_CONFIG_TABLE = 'allops_raku_pm_config';
 const PM_RUNS_TABLE = 'allops_raku_pm_runs';
 const PM_CUSTOMER_TABLE = 'allops_raku_pm_customers';
@@ -84,15 +98,78 @@ const upload = multer({
 let pool;
 const processingTasks = new Set();
 const querySizingProcessingRuns = new Set();
+const queryPermissionProcessingRuns = new Set();
 let pmRunInProgress = false;
 let pmCronTask = null;
+let queryPermissionCleanupTimer = null;
+let queryPermissionCleanupCronTask = null;
+let queryPermissionRuntimeSettings = null;
 
 function getNowIso() {
   return new Date().toISOString();
 }
 
+function getDefaultQueryPermissionSettings() {
+  return {
+    addConcurrency: QUERY_PERMISSION_ADD_CONCURRENCY,
+    addMaxRetries: QUERY_PERMISSION_ADD_MAX_RETRIES,
+    addRetryBaseMs: QUERY_PERMISSION_ADD_RETRY_BASE_MS,
+    detailRetentionDays: QUERY_PERMISSION_DETAIL_RETENTION_DAYS,
+    detailCleanupCron: QUERY_PERMISSION_DETAIL_CLEANUP_CRON
+  };
+}
+
+function sanitizeQueryPermissionSettings(raw = {}, fallback = getDefaultQueryPermissionSettings()) {
+  const asInt = (value, base, min, max) => {
+    const n = Number(value);
+    if (!Number.isFinite(n)) {
+      return base;
+    }
+    return Math.min(max, Math.max(min, Math.floor(n)));
+  };
+
+  const cronValue = String(raw.detailCleanupCron ?? fallback.detailCleanupCron ?? '').trim() || fallback.detailCleanupCron;
+  const cronParts = cronValue.split(/\s+/).filter(Boolean);
+  const safeCron = cronParts.length === 5 ? cronValue : fallback.detailCleanupCron;
+
+  return {
+    addConcurrency: asInt(raw.addConcurrency, fallback.addConcurrency, 1, 20),
+    addMaxRetries: asInt(raw.addMaxRetries, fallback.addMaxRetries, 0, 10),
+    addRetryBaseMs: asInt(raw.addRetryBaseMs, fallback.addRetryBaseMs, 100, 10000),
+    detailRetentionDays: asInt(raw.detailRetentionDays, fallback.detailRetentionDays, 1, 365),
+    detailCleanupCron: safeCron
+  };
+}
+
+function getQueryPermissionRuntimeSettings() {
+  if (!queryPermissionRuntimeSettings) {
+    queryPermissionRuntimeSettings = getDefaultQueryPermissionSettings();
+  }
+  return { ...queryPermissionRuntimeSettings };
+}
+
+async function applyQueryPermissionRuntimeSettings(settings) {
+  queryPermissionRuntimeSettings = sanitizeQueryPermissionSettings(settings, getDefaultQueryPermissionSettings());
+  return getQueryPermissionRuntimeSettings();
+}
+
 function toSafeFilename(name) {
   return (name || 'upload.xlsx').replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function toUploadSubdir(name) {
+  return toSafeFilename(String(name || 'misc').trim() || 'misc');
+}
+
+function buildStoredUploadPath(serviceName, fileName) {
+  return `${toUploadSubdir(serviceName)}/${toSafeFilename(fileName)}`;
+}
+
+async function writeStoredUploadFile(storedFilename, buffer) {
+  const outputPath = path.join(UPLOAD_DIR, storedFilename);
+  await fsp.mkdir(path.dirname(outputPath), { recursive: true });
+  await fsp.writeFile(outputPath, buffer);
+  return outputPath;
 }
 
 function sleep(ms) {
@@ -211,13 +288,126 @@ function toCsv(rows) {
 function normalizeAftsQuery(input) {
   const raw = String(input || '').trim();
   const hadJsonEscapedQuotes = /\\"/.test(raw);
-  const normalized = hadJsonEscapedQuotes ? raw.replace(/\\"/g, '"') : raw;
+  let normalized = hadJsonEscapedQuotes ? raw.replace(/\\"/g, '"') : raw;
+
+  // Strip outer wrapper quotes caused by pasting JSON-encoded strings.
+  // e.g. pasting: "PATH:\"/app:...\"  AND cm:name:'test'"
+  //   raw starts with bare `"` (not `\"`) → JSON string wrapper → strip leading `"`
+  //   raw ends with bare `"` (not `\"`)   → JSON string wrapper → strip trailing `"`
+  if (hadJsonEscapedQuotes) {
+    if (raw.startsWith('"')) {
+      normalized = normalized.slice(1);
+    }
+    if (raw.endsWith('"') && !raw.endsWith('\\"')) {
+      normalized = normalized.slice(0, -1);
+    }
+    normalized = normalized.trim();
+  }
 
   return {
     raw,
     normalized,
     hadJsonEscapedQuotes
   };
+}
+
+function normalizePermissionTargetType(input) {
+  const value = String(input || 'all').trim().toLowerCase();
+  if (value === 'folder' || value === 'cm:folder') {
+    return 'folder';
+  }
+  if (value === 'file' || value === 'cm:file' || value === 'cm:content') {
+    return 'file';
+  }
+  return 'all';
+}
+
+function cleanupPermissionQueryText(input) {
+  let value = String(input || '').trim();
+  if (!value) {
+    return '';
+  }
+
+  let previous = null;
+  while (value !== previous) {
+    previous = value;
+    value = value
+      // Auto-fix adjacent clauses with missing boolean operator, e.g.
+      // PATH:"..." cm:name:'x' -> PATH:"..." AND cm:name:'x'
+      .replace(/(["'\)\]])\s+(?=(?:[A-Za-z_][A-Za-z0-9_]*\s*:|NOT\s*\())/g, '$1 AND ')
+      .replace(/\s+(AND|OR)\s+(AND|OR)\s+/ig, ' $1 ')
+      .replace(/\(\s*(AND|OR)\s+/ig, '(')
+      .replace(/\s+(AND|OR)\s*\)/ig, ')')
+      .replace(/^\s*(AND|OR)\s+/ig, '')
+      .replace(/\s+(AND|OR)\s*$/ig, '')
+      .replace(/\(\s*\)/g, ' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
+  return value;
+}
+
+function buildPermissionQueryDefinition(baseQuery, targetType) {
+  const normalized = normalizeAftsQuery(baseQuery).normalized;
+  let detectedTargetType = null;
+  const strippedQuery = normalized.replace(/TYPE\s*:\s*"cm:(content|folder)"/ig, (_match, nodeType) => {
+    detectedTargetType = nodeType.toLowerCase() === 'content' ? 'file' : 'folder';
+    return ' ';
+  });
+
+  const sanitizedQuery = cleanupPermissionQueryText(strippedQuery);
+  const effectiveTargetType = normalizePermissionTargetType(detectedTargetType || targetType);
+  const suffix = effectiveTargetType === 'folder'
+    ? 'TYPE:"cm:folder"'
+    : (effectiveTargetType === 'file' ? 'TYPE:"cm:content"' : '');
+  const effectiveQuery = sanitizedQuery
+    ? (suffix ? `(${sanitizedQuery}) AND ${suffix}` : sanitizedQuery)
+    : suffix;
+
+  return {
+    rawQuery: normalized,
+    sanitizedQuery,
+    targetType: effectiveTargetType,
+    detectedTargetType,
+    hadEmbeddedType: Boolean(detectedTargetType),
+    effectiveQuery
+  };
+}
+
+function buildPermissionSearchQuery(baseQuery, targetType) {
+  return buildPermissionQueryDefinition(baseQuery, targetType).effectiveQuery;
+}
+
+function parsePermissionExcelRows(filePath) {
+  const workbook = XLSX.readFile(filePath, { cellDates: false });
+  const firstSheet = workbook.SheetNames[0];
+  if (!firstSheet) {
+    return [];
+  }
+
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet], {
+    defval: '',
+    raw: false
+  });
+
+  return rows.map((row, index) => {
+    const groupName = normalizeGroupId(row.Group_Name || row.group_name || row.group || row.GROUP_NAME);
+    const role = String(row.Role || row.role || '').trim();
+    return {
+      lineNo: index + 2,
+      groupName,
+      role
+    };
+  });
+}
+
+function extractNodePath(entry) {
+  const pathName = String(entry?.path?.name || '').trim();
+  if (pathName) {
+    return pathName;
+  }
+  return String(entry?.name || '').trim();
 }
 
 async function processQuerySizingRun(runId) {
@@ -403,6 +593,1071 @@ async function processQuerySizingRun(runId) {
   } finally {
     querySizingProcessingRuns.delete(runId);
   }
+}
+
+async function processPermissionQueryRun(runId) {
+  if (queryPermissionProcessingRuns.has(runId)) {
+    return;
+  }
+
+  queryPermissionProcessingRuns.add(runId);
+
+  try {
+    const runResult = await pool.query(`SELECT * FROM ${QUERY_PERMISSION_RUN_TABLE} WHERE id = $1`, [runId]);
+    const run = runResult.rows[0];
+    if (!run) {
+      return;
+    }
+
+    const effectiveQuery = buildPermissionSearchQuery(run.query_text, run.target_type);
+    if (!effectiveQuery) {
+      throw new Error('query is required');
+    }
+
+    await pool.query(
+      `
+      UPDATE ${QUERY_PERMISSION_RUN_TABLE}
+      SET status = $1,
+          effective_query = $2,
+          message = $3,
+          listed_count = 0,
+          updated_at = $4
+      WHERE id = $5
+      `,
+      ['LISTING', effectiveQuery, 'Query listing started', getNowIso(), runId]
+    );
+    await pool.query(`DELETE FROM ${QUERY_PERMISSION_RUN_ITEM_TABLE} WHERE run_id = $1`, [runId]);
+
+    await safeAddAuditEvent({
+      serviceName: SERVICE_QUERY_ADD_PERMISSION,
+      username: run.username,
+      actionType: 'QUERY_LIST',
+      status: 'LISTING',
+      message: 'Permission query listing started',
+      entityType: 'permission_run',
+      entityId: String(runId),
+      metadata: {
+        target_type: run.target_type,
+        query: run.query_text
+      }
+    });
+
+    const { authHeader } = await alfrescoAuthProvider.getValidatedServiceAuth({
+      purpose: 'query add permission listing',
+      formatError: formatAlfrescoError
+    });
+
+    const searchUrl = `${ALFRESCO_BASE_URL}/alfresco/api/-default-/public/search/versions/1/search`;
+    let skipCount = 0;
+    let hasMoreItems = true;
+    let page = 1;
+    let listedCount = 0;
+
+    while (hasMoreItems) {
+      const response = await axios.post(
+        searchUrl,
+        {
+          query: {
+            language: 'afts',
+            query: effectiveQuery
+          },
+          include: ['path'],
+          paging: {
+            maxItems: QUERY_PERMISSION_MAX_ITEMS,
+            skipCount
+          },
+          sort: [{ type: 'FIELD', field: 'cm:name', ascending: 'true' }]
+        },
+        {
+          timeout: ALFRESCO_TIMEOUT_MS,
+          headers: {
+            Authorization: authHeader,
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      const entries = response?.data?.list?.entries || [];
+      const pagination = response?.data?.list?.pagination || {};
+
+      for (const item of entries) {
+        const entry = item?.entry || {};
+        const nodeId = String(entry.id || '').trim();
+        if (!nodeId) {
+          continue;
+        }
+
+        const nodeType = String(entry.nodeType || '').trim();
+        const nodeRef = `workspace://SpacesStore/${nodeId}`;
+        const nodeName = String(entry.name || '').trim();
+        const nodePath = extractNodePath(entry);
+
+        await pool.query(
+          `
+          INSERT INTO ${QUERY_PERMISSION_RUN_ITEM_TABLE}
+            (run_id, node_ref, node_id, node_type, node_name, node_path, status, message, created_at, updated_at)
+          VALUES
+            ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          ON CONFLICT (run_id, node_id)
+          DO UPDATE SET node_type = EXCLUDED.node_type,
+                        node_name = EXCLUDED.node_name,
+                        node_path = EXCLUDED.node_path,
+                        updated_at = EXCLUDED.updated_at
+          `,
+          [runId, nodeRef, nodeId, nodeType, nodeName, nodePath, 'LISTED', null, getNowIso(), getNowIso()]
+        );
+
+        listedCount += 1;
+      }
+
+      await pool.query(
+        `UPDATE ${QUERY_PERMISSION_RUN_TABLE} SET listed_count = $1, message = $2, updated_at = $3 WHERE id = $4`,
+        [listedCount, `Listing page ${page} (${entries.length} items)`, getNowIso(), runId]
+      );
+
+      hasMoreItems = Boolean(pagination.hasMoreItems);
+      skipCount += QUERY_PERMISSION_MAX_ITEMS;
+      page += 1;
+
+      if (hasMoreItems && QUERY_PERMISSION_PAGE_DELAY_MS > 0) {
+        await sleep(QUERY_PERMISSION_PAGE_DELAY_MS);
+      }
+    }
+
+    await pool.query(
+      `
+      UPDATE ${QUERY_PERMISSION_RUN_TABLE}
+      SET status = $1,
+          listed_count = $2,
+          message = $3,
+          finished_at = $4,
+          updated_at = $5
+      WHERE id = $6
+      `,
+      ['LISTED', listedCount, `List completed (${listedCount} items)`, getNowIso(), getNowIso(), runId]
+    );
+
+    await safeAddAuditEvent({
+      serviceName: SERVICE_QUERY_ADD_PERMISSION,
+      username: run.username,
+      actionType: 'QUERY_LIST',
+      status: 'LISTED',
+      message: `List completed (${listedCount} items)`,
+      entityType: 'permission_run',
+      entityId: String(runId),
+      metadata: {
+        listed_count: listedCount,
+        target_type: run.target_type
+      }
+    });
+  } catch (error) {
+    const reason = truncateMessage(formatAlfrescoError(error, 'Permission query listing failed'), 1000);
+    await pool.query(
+      `
+      UPDATE ${QUERY_PERMISSION_RUN_TABLE}
+      SET status = $1,
+          message = $2,
+          finished_at = $3,
+          updated_at = $4
+      WHERE id = $5
+      `,
+      ['FAILED', reason, getNowIso(), getNowIso(), runId]
+    );
+
+    await safeAddAuditEvent({
+      serviceName: SERVICE_QUERY_ADD_PERMISSION,
+      actionType: 'QUERY_LIST',
+      status: 'FAILED',
+      message: reason,
+      entityType: 'permission_run',
+      entityId: String(runId)
+    });
+  } finally {
+    queryPermissionProcessingRuns.delete(runId);
+  }
+}
+
+function extractSiteShortNameFromNodePath(nodePath) {
+  const normalizedPath = String(nodePath || '').trim();
+  if (!normalizedPath) {
+    return '';
+  }
+
+  const match = normalizedPath.match(/\/Sites\/([^/]+)/i);
+  return String(match?.[1] || '').trim();
+}
+
+async function listSiteMemberIds(siteShortName, authHeader) {
+  const memberIds = new Set();
+  let hasExplicitGroupMembers = false;
+  const endpoint = `${ALFRESCO_BASE_URL}/alfresco/api/-default-/public/alfresco/versions/1/sites/${encodeURIComponent(siteShortName)}/members`;
+
+  const addCandidateGroupKeys = (value) => {
+    const raw = String(value || '').trim();
+    if (!raw) {
+      return;
+    }
+
+    const normalized = normalizeGroupId(raw);
+    const plain = normalized.replace(/^GROUP_/i, '');
+
+    [raw, normalized, plain, `GROUP_${plain}`].forEach((candidate) => {
+      const token = String(candidate || '').trim();
+      if (!token) {
+        return;
+      }
+      memberIds.add(token.toLowerCase());
+    });
+  };
+
+  const collectMembers = async (whereClause = '') => {
+    let skipCount = 0;
+    let hasMoreItems = true;
+
+    while (hasMoreItems) {
+      const response = await axios.get(endpoint, {
+        timeout: ALFRESCO_TIMEOUT_MS,
+        headers: { Authorization: authHeader },
+        params: {
+          maxItems: 100,
+          skipCount,
+          ...(whereClause ? { where: whereClause } : {})
+        }
+      });
+
+      const entries = response?.data?.list?.entries || [];
+      for (const entryWrapper of entries) {
+        const entry = entryWrapper?.entry || {};
+        const memberType = String(entry.memberType || entry.authorityType || '').trim().toUpperCase();
+        if (memberType === 'GROUP') {
+          hasExplicitGroupMembers = true;
+        }
+
+        const rawId = String(entry.id || '').trim();
+        const authorityId = String(entry.authorityId || '').trim();
+        const authorityName = String(entry.authorityName || '').trim();
+        const looksLikeGroup = [rawId, authorityId, authorityName].some((value) => /^GROUP_/i.test(String(value || '').trim()));
+        if (looksLikeGroup) {
+          hasExplicitGroupMembers = true;
+        }
+
+        addCandidateGroupKeys(entry.id);
+        addCandidateGroupKeys(entry.authorityId);
+        addCandidateGroupKeys(entry.authorityName);
+      }
+
+      const pagination = response?.data?.list?.pagination || {};
+      hasMoreItems = Boolean(pagination.hasMoreItems);
+      skipCount += Number(pagination.count || entries.length || 0);
+
+      if (!entries.length) {
+        break;
+      }
+    }
+  };
+
+  await collectMembers('');
+
+  try {
+    await collectMembers(`(memberType='GROUP')`);
+  } catch (_error) {
+    // Some versions may not support this where clause; keep base result as fallback.
+  }
+
+  return {
+    memberIds,
+    hasExplicitGroupMembers
+  };
+}
+
+async function isGroupMemberOfSite(siteShortName, groupId, authHeader) {
+  const normalized = normalizeGroupId(groupId);
+  if (!normalized) {
+    return false;
+  }
+
+  const plain = normalized.replace(/^GROUP_/i, '');
+  const candidates = Array.from(new Set([
+    normalized,
+    plain,
+    normalized.toUpperCase(),
+    plain.toUpperCase(),
+    normalized.toLowerCase(),
+    plain.toLowerCase()
+  ].filter(Boolean)));
+  let notFoundCount = 0;
+
+  for (const candidate of candidates) {
+    try {
+      await axios.get(
+        `${ALFRESCO_BASE_URL}/alfresco/api/-default-/public/alfresco/versions/1/sites/${encodeURIComponent(siteShortName)}/members/${encodeURIComponent(candidate)}`,
+        {
+          timeout: ALFRESCO_TIMEOUT_MS,
+          headers: { Authorization: authHeader }
+        }
+      );
+      return { isMember: true, notFoundOnly: false };
+    } catch (error) {
+      const status = Number(error?.response?.status || 0);
+      if (status === 404) {
+        notFoundCount += 1;
+        continue;
+      }
+      throw error;
+    }
+  }
+
+  return {
+    isMember: false,
+    notFoundOnly: notFoundCount > 0
+  };
+}
+
+async function validateSiteMembershipForGroups(siteShortName, groupNames, authHeader) {
+  const normalizedGroups = Array.from(new Set(
+    (groupNames || [])
+      .map((name) => normalizeGroupId(name))
+      .filter((name) => /^GROUP_/i.test(name))
+  ));
+
+  if (!normalizedGroups.length) {
+    return [];
+  }
+
+  const { memberIds: siteMemberIds, hasExplicitGroupMembers } = await listSiteMemberIds(siteShortName, authHeader);
+  const missingGroups = [];
+  let directCheckCount = 0;
+  let directNotFoundOnlyCount = 0;
+
+  for (const groupId of normalizedGroups) {
+    const plain = groupId.replace(/^GROUP_/i, '');
+    const inMemberList = [groupId, plain, `GROUP_${plain}`]
+      .map((item) => String(item || '').toLowerCase())
+      .some((key) => siteMemberIds.has(key));
+
+    if (inMemberList) {
+      continue;
+    }
+
+    const directMemberResult = await isGroupMemberOfSite(siteShortName, groupId, authHeader);
+    directCheckCount += 1;
+    if (directMemberResult?.notFoundOnly) {
+      directNotFoundOnlyCount += 1;
+    }
+
+    if (!directMemberResult?.isMember) {
+      missingGroups.push(groupId);
+    }
+  }
+
+  const allGroupsFlaggedMissing = missingGroups.length === normalizedGroups.length;
+  const allDirectChecksNotFoundOnly = directCheckCount > 0 && directNotFoundOnlyCount === directCheckCount;
+  const cannotReliablyValidateGroups = !hasExplicitGroupMembers && allGroupsFlaggedMissing && allDirectChecksNotFoundOnly;
+
+  if (cannotReliablyValidateGroups) {
+    // Some ACS environments don't expose group memberships through public site-members APIs.
+    // Avoid blocking permission add with false negatives in that case.
+    return [];
+  }
+
+  return missingGroups;
+}
+
+async function addPermissionsToNode(item, rows, authHeader, inheritPermissions = true) {
+  const nodeId = String(item?.node_id || '').trim();
+
+  const classifyPermissionPutError = (error) => {
+    const status = Number(error?.response?.status || 0);
+    const brief = String(error?.response?.data?.error?.briefSummary || '');
+    const key = String(error?.response?.data?.error?.errorKey || '');
+    const message = String(error?.message || '');
+    const rawDetail = `${brief} ${key} ${message}`.toLowerCase();
+
+    if (status === 404) {
+      return `HTTP 404: Node not found (${nodeId})`;
+    }
+    if (status === 403) {
+      return `HTTP 403: Permission denied to modify node (${nodeId})`;
+    }
+    const looksLikeGroupInvalid = ['authority', 'group', 'does not exist', 'not found'].some((h) => rawDetail.includes(h));
+    const looksLikeRoleInvalid = ['permission', 'invalid value', 'invalid permission', 'accessstatus', 'role'].some((h) => rawDetail.includes(h));
+    if ((status === 400 || status === 422) && looksLikeGroupInvalid && !looksLikeRoleInvalid) {
+      return `HTTP ${status}: Group not found`;
+    }
+    if ((status === 400 || status === 422) && looksLikeRoleInvalid) {
+      return `HTTP ${status}: Permission role invalid`;
+    }
+    return formatAlfrescoError(error, 'permission replace failed');
+  };
+
+  // Build fresh locallySet from Excel rows (REPLACE semantics — clears all old permissions)
+  const locallySet = rows
+    .map((row) => ({
+      authorityId: String(row?.groupName || '').trim(),
+      name: String(row?.role || '').trim(),
+      accessStatus: 'ALLOWED'
+    }))
+    .filter((e) => e.authorityId && e.name);
+
+  try {
+    await axios.put(
+      `${ALFRESCO_BASE_URL}/alfresco/api/-default-/public/alfresco/versions/1/nodes/${encodeURIComponent(nodeId)}`,
+      {
+        permissions: {
+          isInheritanceEnabled: Boolean(inheritPermissions),
+          locallySet
+        }
+      },
+      {
+        timeout: ALFRESCO_TIMEOUT_MS,
+        headers: {
+          Authorization: authHeader,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return { applied: locallySet.length, errors: [], retryable: false };
+  } catch (error) {
+    const status = Number(error?.response?.status || 0);
+    const code = String(error?.code || '').toUpperCase();
+    const retryable = [429, 500, 502, 503, 504].includes(status)
+      || ['ECONNABORTED', 'ETIMEDOUT', 'ECONNRESET', 'EPIPE', 'ENOTFOUND'].includes(code);
+    return { applied: 0, errors: [classifyPermissionPutError(error)], retryable };
+  }
+}
+
+async function addPermissionsToNodeWithRetry(item, rows, authHeader, inheritPermissions = true) {
+  const settings = getQueryPermissionRuntimeSettings();
+  const maxAttempts = Number(settings.addMaxRetries || 0) + 1;
+  let attempt = 0;
+  let lastResult = { applied: 0, errors: ['Unknown permission update error'], retryable: false };
+
+  while (attempt < maxAttempts) {
+    attempt += 1;
+    const result = await addPermissionsToNode(item, rows, authHeader, inheritPermissions);
+    lastResult = result;
+
+    if (!result.errors.length || !result.retryable || attempt >= maxAttempts) {
+      return result;
+    }
+
+    const backoffMs = Number(settings.addRetryBaseMs || 500) * (2 ** (attempt - 1));
+    await sleep(backoffMs);
+  }
+
+  return lastResult;
+}
+
+async function runPermissionUpdatesWithConcurrency({
+  items,
+  permissionRows,
+  authHeader,
+  inheritPermissions,
+  onItemResult
+}) {
+  if (!items.length) {
+    return;
+  }
+
+  const settings = getQueryPermissionRuntimeSettings();
+  const concurrency = Math.min(Number(settings.addConcurrency || 5), items.length);
+  let cursor = 0;
+
+  const worker = async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) {
+        return;
+      }
+
+      const item = items[index];
+      const update = await addPermissionsToNodeWithRetry(item, permissionRows, authHeader, inheritPermissions);
+      await onItemResult(item, update);
+    }
+  };
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+}
+
+async function processPermissionAddRun(runId, source = 'run') {
+  if (queryPermissionProcessingRuns.has(runId)) {
+    throw new Error('Run is already processing');
+  }
+
+  queryPermissionProcessingRuns.add(runId);
+
+  try {
+    const runResult = await pool.query(
+      `
+      SELECT r.*, t.permission_filename AS template_permission_filename, t.permission_stored_filename AS template_permission_stored_filename, t.inherit_permissions AS template_inherit_permissions
+      FROM ${QUERY_PERMISSION_RUN_TABLE} r
+      LEFT JOIN ${QUERY_PERMISSION_TEMPLATE_TABLE} t ON t.id = r.template_id
+      WHERE r.id = $1
+      `,
+      [runId]
+    );
+    const run = runResult.rows[0];
+    if (!run) {
+      throw new Error('Run not found');
+    }
+
+    if (!['LISTED', 'COMPLETED_WITH_ERRORS'].includes(String(run.status || ''))) {
+      throw new Error('Run must be LISTED before Add Permission');
+    }
+
+    const selectedSource = source === 'template' ? 'template' : 'run';
+    const storedFilename = selectedSource === 'template' ? run.template_permission_stored_filename : run.permission_stored_filename;
+    const displayFilename = selectedSource === 'template' ? run.template_permission_filename : run.permission_filename;
+
+    if (!storedFilename) {
+      throw new Error(selectedSource === 'template'
+        ? 'Template has no permission excel. Please attach file first.'
+        : 'Run has no permission excel. Please import permission file first.');
+    }
+
+    const permissionFilePath = path.join(UPLOAD_DIR, storedFilename);
+    if (!fs.existsSync(permissionFilePath)) {
+      throw new Error('Permission file not found on server');
+    }
+
+    const permissionRows = parsePermissionExcelRows(permissionFilePath)
+      .filter((row) => row.groupName && row.role);
+
+    if (!permissionRows.length) {
+      throw new Error('Permission file has no valid rows. Required columns: Group_Name, Role');
+    }
+
+    await pool.query(
+      `
+      UPDATE ${QUERY_PERMISSION_RUN_TABLE}
+      SET status = $1,
+          add_source = $2,
+          add_started_at = $3,
+          add_success_count = 0,
+          add_failed_count = 0,
+          message = $4,
+          updated_at = $5
+      WHERE id = $6
+      `,
+      ['ADDING_PERMISSION', selectedSource, getNowIso(), `Adding permission from ${displayFilename || storedFilename}`, getNowIso(), runId]
+    );
+
+    const itemsResult = await pool.query(
+      `SELECT id, node_id, node_ref, node_name, node_path FROM ${QUERY_PERMISSION_RUN_ITEM_TABLE} WHERE run_id = $1 ORDER BY id ASC`,
+      [runId]
+    );
+    const items = itemsResult.rows;
+
+    if (!items.length) {
+      throw new Error('No listed nodes found in this run');
+    }
+
+    const { authHeader } = await alfrescoAuthProvider.getValidatedServiceAuth({
+      requiredGroupId: GROUP_IMPORT_REQUIRED_GROUP,
+      purpose: 'query add permission update',
+      formatError: formatAlfrescoError
+    });
+
+    const allGroupNames = permissionRows.map((row) => row.groupName);
+    const siteItems = items
+      .map((item) => ({ item, siteShortName: extractSiteShortNameFromNodePath(item.node_path) }))
+      .filter((entry) => Boolean(entry.siteShortName));
+    const uniqueSites = Array.from(new Set(siteItems.map((entry) => entry.siteShortName)));
+
+    const missingBySite = [];
+    for (const siteShortName of uniqueSites) {
+      const missingGroups = await validateSiteMembershipForGroups(siteShortName, allGroupNames, authHeader);
+      if (missingGroups.length) {
+        missingBySite.push({ siteShortName, missingGroups });
+      }
+    }
+
+    if (missingBySite.length) {
+      const detail = missingBySite
+        .map((entry) => `${entry.siteShortName}: ${entry.missingGroups.join(', ')}`)
+        .join(' | ');
+      const validationMessage = truncateMessage(`Site membership validation failed. Missing group membership -> ${detail}`, 1000);
+
+      await pool.query(
+        `UPDATE ${QUERY_PERMISSION_RUN_ITEM_TABLE} SET status = $1, message = $2, updated_at = $3 WHERE run_id = $4 AND status = $5`,
+        ['ADD_FAILED', validationMessage, getNowIso(), runId, 'LISTED']
+      );
+
+      await pool.query(
+        `UPDATE ${QUERY_PERMISSION_RUN_TABLE} SET status = $1, add_success_count = 0, add_failed_count = $2, message = $3, finished_at = $4, add_finished_at = $5, updated_at = $6 WHERE id = $7`,
+        ['FAILED', items.length, validationMessage, getNowIso(), getNowIso(), getNowIso(), runId]
+      );
+
+      await safeAddAuditEvent({
+        serviceName: SERVICE_QUERY_ADD_PERMISSION,
+        username: run.username,
+        actionType: 'ADD_PERMISSION',
+        status: 'FAILED',
+        message: validationMessage,
+        entityType: 'permission_run',
+        entityId: String(runId),
+        metadata: {
+          add_source: selectedSource,
+          missing_site_memberships: missingBySite
+        }
+      });
+
+      return;
+    }
+
+    let successItems = 0;
+    let failedItems = 0;
+    const inheritPermissions = Boolean(run.template_inherit_permissions ?? true);
+
+    await runPermissionUpdatesWithConcurrency({
+      items,
+      permissionRows,
+      authHeader,
+      inheritPermissions,
+      onItemResult: async (item, update) => {
+        if (!update.errors.length) {
+          successItems += 1;
+          await pool.query(
+            `UPDATE ${QUERY_PERMISSION_RUN_ITEM_TABLE} SET status = $1, message = $2, updated_at = $3 WHERE id = $4`,
+            ['ADD_SUCCESS', `Applied ${update.applied} permission row(s)`, getNowIso(), item.id]
+          );
+        } else {
+          failedItems += 1;
+          await pool.query(
+            `UPDATE ${QUERY_PERMISSION_RUN_ITEM_TABLE} SET status = $1, message = $2, updated_at = $3 WHERE id = $4`,
+            ['ADD_FAILED', truncateMessage(update.errors.join(' | '), 1000), getNowIso(), item.id]
+          );
+        }
+
+        await pool.query(
+          `UPDATE ${QUERY_PERMISSION_RUN_TABLE} SET add_success_count = $1, add_failed_count = $2, message = $3, updated_at = $4 WHERE id = $5`,
+          [
+            successItems,
+            failedItems,
+            `Adding permission... success=${successItems}, failed=${failedItems}, concurrency=${getQueryPermissionRuntimeSettings().addConcurrency}`,
+            getNowIso(),
+            runId
+          ]
+        );
+      }
+    });
+
+    const finalStatus = failedItems > 0 ? 'COMPLETED_WITH_ERRORS' : 'COMPLETED';
+    await pool.query(
+      `
+      UPDATE ${QUERY_PERMISSION_RUN_TABLE}
+      SET status = $1,
+          add_success_count = $2,
+          add_failed_count = $3,
+          add_finished_at = $4,
+          finished_at = $5,
+          message = $6,
+          updated_at = $7
+      WHERE id = $8
+      `,
+      [
+        finalStatus,
+        successItems,
+        failedItems,
+        getNowIso(),
+        getNowIso(),
+        `Add permission completed: success=${successItems}, failed=${failedItems}`,
+        getNowIso(),
+        runId
+      ]
+    );
+
+    await safeAddAuditEvent({
+      serviceName: SERVICE_QUERY_ADD_PERMISSION,
+      username: run.username,
+      actionType: 'ADD_PERMISSION',
+      status: finalStatus,
+      message: `Add permission completed: success=${successItems}, failed=${failedItems}`,
+      entityType: 'permission_run',
+      entityId: String(runId),
+      metadata: {
+        add_source: selectedSource,
+        permission_file: displayFilename || storedFilename,
+        total_items: items.length,
+        add_success_count: successItems,
+        add_failed_count: failedItems
+      }
+    });
+  } finally {
+    queryPermissionProcessingRuns.delete(runId);
+  }
+}
+
+async function processPermissionRetryFailedRun(runId, source = 'template') {
+  if (queryPermissionProcessingRuns.has(runId)) {
+    throw new Error('Run is already processing');
+  }
+
+  queryPermissionProcessingRuns.add(runId);
+
+  try {
+    const runResult = await pool.query(
+      `
+      SELECT r.*, t.permission_filename AS template_permission_filename, t.permission_stored_filename AS template_permission_stored_filename, t.inherit_permissions AS template_inherit_permissions
+      FROM ${QUERY_PERMISSION_RUN_TABLE} r
+      LEFT JOIN ${QUERY_PERMISSION_TEMPLATE_TABLE} t ON t.id = r.template_id
+      WHERE r.id = $1
+      `,
+      [runId]
+    );
+
+    const run = runResult.rows[0];
+    if (!run) {
+      throw new Error('Run not found');
+    }
+
+    const runStatus = String(run.status || '').toUpperCase();
+    if (['QUEUED', 'LISTING', 'ADDING_PERMISSION'].includes(runStatus)) {
+      throw new Error(`Cannot retry while run is in status ${runStatus}`);
+    }
+
+    const selectedSource = source === 'run' ? 'run' : 'template';
+    const storedFilename = selectedSource === 'template' ? run.template_permission_stored_filename : run.permission_stored_filename;
+    const displayFilename = selectedSource === 'template' ? run.template_permission_filename : run.permission_filename;
+
+    if (!storedFilename) {
+      throw new Error(selectedSource === 'template'
+        ? 'Template has no permission excel. Please attach file first.'
+        : 'Run has no permission excel. Please import permission file first.');
+    }
+
+    const permissionFilePath = path.join(UPLOAD_DIR, storedFilename);
+    if (!fs.existsSync(permissionFilePath)) {
+      throw new Error('Permission file not found on server');
+    }
+
+    const permissionRows = parsePermissionExcelRows(permissionFilePath)
+      .filter((row) => row.groupName && row.role);
+
+    if (!permissionRows.length) {
+      throw new Error('Permission file has no valid rows. Required columns: Group_Name, Role');
+    }
+
+    const itemsResult = await pool.query(
+      `SELECT id, node_id, node_ref, node_name, node_path FROM ${QUERY_PERMISSION_RUN_ITEM_TABLE} WHERE run_id = $1 AND status = 'ADD_FAILED' ORDER BY id ASC`,
+      [runId]
+    );
+    const failedItems = itemsResult.rows;
+
+    if (!failedItems.length) {
+      throw new Error('No failed items to retry');
+    }
+
+    await pool.query(
+      `
+      UPDATE ${QUERY_PERMISSION_RUN_TABLE}
+      SET status = $1,
+          add_source = $2,
+          add_started_at = $3,
+          message = $4,
+          updated_at = $5
+      WHERE id = $6
+      `,
+      ['ADDING_PERMISSION', selectedSource, getNowIso(), `Retrying failed items from ${displayFilename || storedFilename}`, getNowIso(), runId]
+    );
+
+    const { authHeader } = await alfrescoAuthProvider.getValidatedServiceAuth({
+      requiredGroupId: GROUP_IMPORT_REQUIRED_GROUP,
+      purpose: 'query add permission retry failed items',
+      formatError: formatAlfrescoError
+    });
+
+    const allGroupNames = permissionRows.map((row) => row.groupName);
+    const siteItems = failedItems
+      .map((item) => ({ item, siteShortName: extractSiteShortNameFromNodePath(item.node_path) }))
+      .filter((entry) => Boolean(entry.siteShortName));
+    const uniqueSites = Array.from(new Set(siteItems.map((entry) => entry.siteShortName)));
+
+    const missingBySite = [];
+    for (const siteShortName of uniqueSites) {
+      const missingGroups = await validateSiteMembershipForGroups(siteShortName, allGroupNames, authHeader);
+      if (missingGroups.length) {
+        missingBySite.push({ siteShortName, missingGroups });
+      }
+    }
+
+    if (missingBySite.length) {
+      const detail = missingBySite
+        .map((entry) => `${entry.siteShortName}: ${entry.missingGroups.join(', ')}`)
+        .join(' | ');
+      const validationMessage = truncateMessage(`Site membership validation failed before retry. Missing group membership -> ${detail}`, 1000);
+
+      await pool.query(
+        `UPDATE ${QUERY_PERMISSION_RUN_ITEM_TABLE} SET message = $1, updated_at = $2 WHERE run_id = $3 AND status = $4`,
+        [validationMessage, getNowIso(), runId, 'ADD_FAILED']
+      );
+
+      await pool.query(
+        `UPDATE ${QUERY_PERMISSION_RUN_TABLE} SET status = $1, message = $2, finished_at = $3, add_finished_at = $4, updated_at = $5 WHERE id = $6`,
+        ['FAILED', validationMessage, getNowIso(), getNowIso(), getNowIso(), runId]
+      );
+
+      await safeAddAuditEvent({
+        serviceName: SERVICE_QUERY_ADD_PERMISSION,
+        username: run.username,
+        actionType: 'ADD_PERMISSION_RETRY_FAILED',
+        status: 'FAILED',
+        message: validationMessage,
+        entityType: 'permission_run',
+        entityId: String(runId),
+        metadata: {
+          add_source: selectedSource,
+          missing_site_memberships: missingBySite
+        }
+      });
+
+      return;
+    }
+
+    let retriedSuccess = 0;
+    let retriedFailed = 0;
+    const inheritPermissions = Boolean(run.template_inherit_permissions ?? true);
+
+    await runPermissionUpdatesWithConcurrency({
+      items: failedItems,
+      permissionRows,
+      authHeader,
+      inheritPermissions,
+      onItemResult: async (item, update) => {
+        if (!update.errors.length) {
+          retriedSuccess += 1;
+          await pool.query(
+            `UPDATE ${QUERY_PERMISSION_RUN_ITEM_TABLE} SET status = $1, message = $2, updated_at = $3 WHERE id = $4`,
+            ['ADD_SUCCESS', `Retry applied ${update.applied} permission row(s)`, getNowIso(), item.id]
+          );
+        } else {
+          retriedFailed += 1;
+          await pool.query(
+            `UPDATE ${QUERY_PERMISSION_RUN_ITEM_TABLE} SET status = $1, message = $2, updated_at = $3 WHERE id = $4`,
+            ['ADD_FAILED', truncateMessage(update.errors.join(' | '), 1000), getNowIso(), item.id]
+          );
+        }
+      }
+    });
+
+    const summaryResult = await pool.query(
+      `
+      SELECT
+        SUM(CASE WHEN status = 'LISTED' THEN 1 ELSE 0 END)::bigint AS wait_count,
+        SUM(CASE WHEN status = 'ADD_SUCCESS' THEN 1 ELSE 0 END)::bigint AS success_count,
+        SUM(CASE WHEN status = 'ADD_FAILED' THEN 1 ELSE 0 END)::bigint AS failed_count
+      FROM ${QUERY_PERMISSION_RUN_ITEM_TABLE}
+      WHERE run_id = $1
+      `,
+      [runId]
+    );
+
+    const summary = summaryResult.rows[0] || {};
+    const waitCount = Number(summary.wait_count || 0);
+    const successCount = Number(summary.success_count || 0);
+    const failedCount = Number(summary.failed_count || 0);
+    const finalStatus = failedCount > 0 ? 'COMPLETED_WITH_ERRORS' : (waitCount > 0 ? 'LISTED' : 'COMPLETED');
+
+    await pool.query(
+      `
+      UPDATE ${QUERY_PERMISSION_RUN_TABLE}
+      SET status = $1,
+          add_success_count = $2,
+          add_failed_count = $3,
+          add_finished_at = $4,
+          finished_at = $5,
+          message = $6,
+          updated_at = $7
+      WHERE id = $8
+      `,
+      [
+        finalStatus,
+        successCount,
+        failedCount,
+        getNowIso(),
+        getNowIso(),
+        `Retry failed completed: retried=${failedItems.length}, success=${retriedSuccess}, failed=${retriedFailed}`,
+        getNowIso(),
+        runId
+      ]
+    );
+
+    await safeAddAuditEvent({
+      serviceName: SERVICE_QUERY_ADD_PERMISSION,
+      username: run.username,
+      actionType: 'ADD_PERMISSION_RETRY_FAILED',
+      status: finalStatus,
+      message: `Retry failed completed: retried=${failedItems.length}, success=${retriedSuccess}, failed=${retriedFailed}`,
+      entityType: 'permission_run',
+      entityId: String(runId),
+      metadata: {
+        add_source: selectedSource,
+        permission_file: displayFilename || storedFilename,
+        retried_items: failedItems.length,
+        retried_success: retriedSuccess,
+        retried_failed: retriedFailed,
+        add_success_count: successCount,
+        add_failed_count: failedCount
+      }
+    });
+  } finally {
+    queryPermissionProcessingRuns.delete(runId);
+  }
+}
+
+async function cleanupQueryPermissionData() {
+  const retentionSetting = Number(getQueryPermissionRuntimeSettings().detailRetentionDays || 30);
+  const retentionDays = Number.isFinite(retentionSetting)
+    ? Math.max(1, Math.floor(retentionSetting))
+    : 30;
+
+  const staleRuns = await pool.query(
+    `
+    SELECT r.id
+    FROM ${QUERY_PERMISSION_RUN_TABLE} r
+    WHERE r.status IN ('LISTED', 'COMPLETED', 'COMPLETED_WITH_ERRORS', 'FAILED')
+      AND r.detail_cleared_at IS NULL
+      AND COALESCE(r.finished_at, r.updated_at, r.created_at) < NOW() - ($1::text || ' days')::interval
+      AND EXISTS (SELECT 1 FROM ${QUERY_PERMISSION_RUN_ITEM_TABLE} i WHERE i.run_id = r.id)
+    ORDER BY r.id ASC
+    LIMIT 200
+    `,
+    [String(retentionDays)]
+  );
+
+  if (!staleRuns.rows.length) {
+    return { clearedRuns: 0, clearedItems: 0 };
+  }
+
+  let clearedRuns = 0;
+  let clearedItems = 0;
+
+  for (const row of staleRuns.rows) {
+    const runId = Number(row.id);
+    const deleted = await pool.query(`DELETE FROM ${QUERY_PERMISSION_RUN_ITEM_TABLE} WHERE run_id = $1`, [runId]);
+    const removed = Number(deleted.rowCount || 0);
+    if (removed <= 0) {
+      continue;
+    }
+
+    const clearNote = `Details cleared by retention policy (${retentionDays} day(s)); summary kept`;
+    await pool.query(
+      `
+      UPDATE ${QUERY_PERMISSION_RUN_TABLE}
+      SET detail_cleared_at = $1,
+          detail_cleared_item_count = $2,
+          detail_cleared_reason = $3,
+          message = $4,
+          updated_at = $5
+      WHERE id = $6
+      `,
+      [getNowIso(), removed, clearNote, truncateMessage(clearNote, 1000), getNowIso(), runId]
+    );
+
+    clearedRuns += 1;
+    clearedItems += removed;
+  }
+
+  return { clearedRuns, clearedItems };
+}
+
+async function loadQueryPermissionSettings() {
+  const defaults = getDefaultQueryPermissionSettings();
+  const result = await pool.query(
+    `
+    SELECT add_concurrency, add_max_retries, add_retry_base_ms, detail_retention_days, detail_cleanup_cron
+    FROM ${QUERY_PERMISSION_SETTINGS_TABLE}
+    WHERE id = 1
+    `
+  );
+
+  if (!result.rows[0]) {
+    await pool.query(
+      `
+      INSERT INTO ${QUERY_PERMISSION_SETTINGS_TABLE}
+        (id, add_concurrency, add_max_retries, add_retry_base_ms, detail_retention_days, detail_cleanup_cron, updated_at, updated_by)
+      VALUES
+        (1, $1, $2, $3, $4, $5, $6, $7)
+      `,
+      [
+        defaults.addConcurrency,
+        defaults.addMaxRetries,
+        defaults.addRetryBaseMs,
+        defaults.detailRetentionDays,
+        defaults.detailCleanupCron,
+        getNowIso(),
+        'system-default'
+      ]
+    );
+    await applyQueryPermissionRuntimeSettings(defaults);
+    return getQueryPermissionRuntimeSettings();
+  }
+
+  const dbSettings = {
+    addConcurrency: result.rows[0].add_concurrency,
+    addMaxRetries: result.rows[0].add_max_retries,
+    addRetryBaseMs: result.rows[0].add_retry_base_ms,
+    detailRetentionDays: result.rows[0].detail_retention_days,
+    detailCleanupCron: result.rows[0].detail_cleanup_cron
+  };
+
+  await applyQueryPermissionRuntimeSettings(dbSettings);
+  return getQueryPermissionRuntimeSettings();
+}
+
+async function saveQueryPermissionSettings(nextSettings, updatedBy = 'unknown') {
+  const merged = sanitizeQueryPermissionSettings({
+    ...getQueryPermissionRuntimeSettings(),
+    ...(nextSettings || {})
+  }, getDefaultQueryPermissionSettings());
+
+  await pool.query(
+    `
+    INSERT INTO ${QUERY_PERMISSION_SETTINGS_TABLE}
+      (id, add_concurrency, add_max_retries, add_retry_base_ms, detail_retention_days, detail_cleanup_cron, updated_at, updated_by)
+    VALUES
+      (1, $1, $2, $3, $4, $5, $6, $7)
+    ON CONFLICT (id) DO UPDATE SET
+      add_concurrency = EXCLUDED.add_concurrency,
+      add_max_retries = EXCLUDED.add_max_retries,
+      add_retry_base_ms = EXCLUDED.add_retry_base_ms,
+      detail_retention_days = EXCLUDED.detail_retention_days,
+      detail_cleanup_cron = EXCLUDED.detail_cleanup_cron,
+      updated_at = EXCLUDED.updated_at,
+      updated_by = EXCLUDED.updated_by
+    `,
+    [
+      merged.addConcurrency,
+      merged.addMaxRetries,
+      merged.addRetryBaseMs,
+      merged.detailRetentionDays,
+      merged.detailCleanupCron,
+      getNowIso(),
+      updatedBy
+    ]
+  );
+
+  await applyQueryPermissionRuntimeSettings(merged);
+  await refreshQueryPermissionCleanupSchedule();
+  return getQueryPermissionRuntimeSettings();
+}
+
+async function refreshQueryPermissionCleanupSchedule() {
+  if (queryPermissionCleanupCronTask) {
+    queryPermissionCleanupCronTask.stop();
+    if (typeof queryPermissionCleanupCronTask.destroy === 'function') {
+      queryPermissionCleanupCronTask.destroy();
+    }
+    queryPermissionCleanupCronTask = null;
+  }
+
+  const cronExpression = String(getQueryPermissionRuntimeSettings().detailCleanupCron || QUERY_PERMISSION_DETAIL_CLEANUP_CRON);
+  queryPermissionCleanupCronTask = cron.schedule(cronExpression, () => {
+    cleanupQueryPermissionData().catch((error) => {
+      console.error('Query permission cleanup failed', error?.message || error);
+    });
+  }, { timezone: PM_TIMEZONE });
 }
 
 function getDefaultPmConfig() {
@@ -684,6 +1939,10 @@ async function queuePmRun(triggerType, requestedBy) {
 
 async function initDb() {
   await fsp.mkdir(UPLOAD_DIR, { recursive: true });
+  await fsp.mkdir(path.join(UPLOAD_DIR, toUploadSubdir(SERVICE_PERMISSION_IMPORT)), { recursive: true });
+  await fsp.mkdir(path.join(UPLOAD_DIR, toUploadSubdir(SERVICE_GROUP_MEMBER_IMPORT)), { recursive: true });
+  await fsp.mkdir(path.join(UPLOAD_DIR, toUploadSubdir(SERVICE_USER_CSV_IMPORT)), { recursive: true });
+  await fsp.mkdir(path.join(UPLOAD_DIR, toUploadSubdir(SERVICE_QUERY_ADD_PERMISSION)), { recursive: true });
 
   if (!PGHOST || !PGDATABASE || !PGUSER || !PGPASSWORD) {
     throw new Error('Missing PostgreSQL configuration (PGHOST, PGDATABASE, PGUSER, PGPASSWORD)');
@@ -779,6 +2038,103 @@ async function initDb() {
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_${QUERY_SIZING_TABLE}_queried_at ON ${QUERY_SIZING_TABLE}(queried_at DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_${QUERY_SIZING_TABLE}_username ON ${QUERY_SIZING_TABLE}(username, queried_at DESC)`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_${QUERY_SIZING_TABLE}_status ON ${QUERY_SIZING_TABLE}(status, queried_at DESC)`);
+
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS ${QUERY_PERMISSION_TEMPLATE_TABLE} (
+      id BIGSERIAL PRIMARY KEY,
+      template_name TEXT NOT NULL,
+      query_text TEXT NOT NULL,
+      target_type TEXT NOT NULL DEFAULT 'all',
+      permission_filename TEXT,
+      permission_stored_filename TEXT,
+      inherit_permissions BOOLEAN NOT NULL DEFAULT TRUE,
+      created_by TEXT NOT NULL,
+      updated_by TEXT,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL
+    )
+    `
+  );
+
+  await pool.query(
+    `ALTER TABLE ${QUERY_PERMISSION_TEMPLATE_TABLE} ADD COLUMN IF NOT EXISTS inherit_permissions BOOLEAN NOT NULL DEFAULT TRUE`
+  );
+
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS ${QUERY_PERMISSION_RUN_TABLE} (
+      id BIGSERIAL PRIMARY KEY,
+      template_id BIGINT REFERENCES ${QUERY_PERMISSION_TEMPLATE_TABLE}(id) ON DELETE SET NULL,
+      queried_at TIMESTAMPTZ NOT NULL,
+      username TEXT NOT NULL,
+      query_text TEXT NOT NULL,
+      effective_query TEXT,
+      target_type TEXT NOT NULL DEFAULT 'all',
+      status TEXT NOT NULL,
+      listed_count BIGINT NOT NULL DEFAULT 0,
+      add_success_count BIGINT NOT NULL DEFAULT 0,
+      add_failed_count BIGINT NOT NULL DEFAULT 0,
+      permission_filename TEXT,
+      permission_stored_filename TEXT,
+      add_source TEXT,
+      message TEXT,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      finished_at TIMESTAMPTZ,
+      add_started_at TIMESTAMPTZ,
+      add_finished_at TIMESTAMPTZ,
+      detail_cleared_at TIMESTAMPTZ,
+      detail_cleared_item_count BIGINT NOT NULL DEFAULT 0,
+      detail_cleared_reason TEXT
+    )
+    `
+  );
+
+  await pool.query(`ALTER TABLE ${QUERY_PERMISSION_RUN_TABLE} ADD COLUMN IF NOT EXISTS detail_cleared_at TIMESTAMPTZ`);
+  await pool.query(`ALTER TABLE ${QUERY_PERMISSION_RUN_TABLE} ADD COLUMN IF NOT EXISTS detail_cleared_item_count BIGINT NOT NULL DEFAULT 0`);
+  await pool.query(`ALTER TABLE ${QUERY_PERMISSION_RUN_TABLE} ADD COLUMN IF NOT EXISTS detail_cleared_reason TEXT`);
+
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS ${QUERY_PERMISSION_RUN_ITEM_TABLE} (
+      id BIGSERIAL PRIMARY KEY,
+      run_id BIGINT NOT NULL REFERENCES ${QUERY_PERMISSION_RUN_TABLE}(id) ON DELETE CASCADE,
+      node_ref TEXT NOT NULL,
+      node_id TEXT NOT NULL,
+      node_type TEXT,
+      node_name TEXT,
+      node_path TEXT,
+      status TEXT NOT NULL DEFAULT 'LISTED',
+      message TEXT,
+      created_at TIMESTAMPTZ NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      CONSTRAINT uq_${QUERY_PERMISSION_RUN_ITEM_TABLE}_run_node UNIQUE (run_id, node_id)
+    )
+    `
+  );
+
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${QUERY_PERMISSION_TEMPLATE_TABLE}_updated_at ON ${QUERY_PERMISSION_TEMPLATE_TABLE}(updated_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${QUERY_PERMISSION_RUN_TABLE}_queried_at ON ${QUERY_PERMISSION_RUN_TABLE}(queried_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${QUERY_PERMISSION_RUN_TABLE}_status ON ${QUERY_PERMISSION_RUN_TABLE}(status, queried_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${QUERY_PERMISSION_RUN_TABLE}_username ON ${QUERY_PERMISSION_RUN_TABLE}(username, queried_at DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${QUERY_PERMISSION_RUN_ITEM_TABLE}_run_id ON ${QUERY_PERMISSION_RUN_ITEM_TABLE}(run_id, id DESC)`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_${QUERY_PERMISSION_RUN_ITEM_TABLE}_status ON ${QUERY_PERMISSION_RUN_ITEM_TABLE}(status, run_id DESC)`);
+
+  await pool.query(
+    `
+    CREATE TABLE IF NOT EXISTS ${QUERY_PERMISSION_SETTINGS_TABLE} (
+      id INTEGER PRIMARY KEY,
+      add_concurrency INTEGER NOT NULL,
+      add_max_retries INTEGER NOT NULL,
+      add_retry_base_ms INTEGER NOT NULL,
+      detail_retention_days INTEGER NOT NULL,
+      detail_cleanup_cron TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL,
+      updated_by TEXT
+    )
+    `
+  );
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${PM_CONFIG_TABLE} (
@@ -2240,11 +3596,10 @@ app.post('/api/imports', authMiddleware, upload.single('file'), async (req, res)
     );
 
     const taskId = inserted.rows[0].id;
-    const safeName = toSafeFilename(originalName);
-    const storedFilename = `${taskId}_${safeName}`;
-    const outputPath = path.join(UPLOAD_DIR, storedFilename);
+    const safeName = `${taskId}_${toSafeFilename(originalName)}`;
+    const storedFilename = buildStoredUploadPath(SERVICE_PERMISSION_IMPORT, safeName);
 
-    await fsp.writeFile(outputPath, file.buffer);
+    await writeStoredUploadFile(storedFilename, file.buffer);
 
     await pool.query(
       `UPDATE ${IMPORTS_TABLE} SET stored_filename = $1, updated_at = $2 WHERE id = $3`,
@@ -2370,10 +3725,10 @@ app.post('/api/group-memberships/import', authMiddleware, upload.single('file'),
     );
 
     const taskId = inserted.rows[0].id;
-    const storedFilename = `${taskId}_${toSafeFilename(originalName)}`;
-    const outputPath = path.join(UPLOAD_DIR, storedFilename);
+    const safeName = `${taskId}_${toSafeFilename(originalName)}`;
+    const storedFilename = buildStoredUploadPath(SERVICE_GROUP_MEMBER_IMPORT, safeName);
 
-    await fsp.writeFile(outputPath, file.buffer);
+    await writeStoredUploadFile(storedFilename, file.buffer);
     await pool.query(
       `UPDATE ${IMPORTS_TABLE} SET stored_filename = $1, updated_at = $2 WHERE id = $3`,
       [storedFilename, getNowIso(), taskId]
@@ -2440,10 +3795,10 @@ app.post('/api/users/import-csv', authMiddleware, upload.single('file'), async (
     );
 
     const taskId = inserted.rows[0].id;
-    const storedFilename = `${taskId}_${toSafeFilename(originalName)}`;
-    const outputPath = path.join(UPLOAD_DIR, storedFilename);
+    const safeName = `${taskId}_${toSafeFilename(originalName)}`;
+    const storedFilename = buildStoredUploadPath(SERVICE_USER_CSV_IMPORT, safeName);
 
-    await fsp.writeFile(outputPath, file.buffer);
+    await writeStoredUploadFile(storedFilename, file.buffer);
     await pool.query(
       `UPDATE ${IMPORTS_TABLE} SET stored_filename = $1, updated_at = $2 WHERE id = $3`,
       [storedFilename, getNowIso(), taskId]
@@ -2525,6 +3880,40 @@ app.get('/api/reports/audit/services', authMiddleware, async (req, res) => {
     items: result.rows,
     count: result.rows.length
   });
+});
+
+registerQueryPermissionRoutes(app, {
+  axios,
+  pool,
+  getPool: () => pool,
+  authMiddleware,
+  upload,
+  fsp,
+  path,
+  fs,
+  UPLOAD_DIR,
+  QUERY_PERMISSION_TEMPLATE_TABLE,
+  QUERY_PERMISSION_RUN_TABLE,
+  QUERY_PERMISSION_RUN_ITEM_TABLE,
+  SERVICE_QUERY_ADD_PERMISSION,
+  safeAddAuditEvent,
+  alfrescoAuthProvider,
+  ALFRESCO_BASE_URL,
+  ALFRESCO_TIMEOUT_MS,
+  buildPermissionQueryDefinition,
+  normalizeAftsQuery,
+  normalizePermissionTargetType,
+  buildPermissionSearchQuery,
+  formatAlfrescoError,
+  toSafeFilename,
+  getNowIso,
+  processPermissionQueryRun,
+  processPermissionAddRun,
+  processPermissionRetryFailedRun,
+  getQueryPermissionRuntimeSettings,
+  saveQueryPermissionSettings,
+  toPositiveInt,
+  truncateMessage
 });
 
 app.post('/api/query-sizing/runs', authMiddleware, async (req, res) => {
@@ -3311,6 +4700,13 @@ app.get('/api/pm/runs', authMiddleware, async (req, res) => {
 async function main() {
   await initDb();
   await refreshPmCronSchedule();
+  await loadQueryPermissionSettings();
+  await refreshQueryPermissionCleanupSchedule();
+
+  cleanupQueryPermissionData().catch((error) => {
+    console.error('Initial query permission cleanup failed', error?.message || error);
+  });
+
   app.listen(PORT, () => {
     console.log(`beflex-support-backend listening on ${PORT}`);
   });
@@ -3324,7 +4720,16 @@ main().catch((error) => {
 process.on('SIGTERM', async () => {
   if (pmCronTask) {
     pmCronTask.stop();
-    pmCronTask.destroy();
+    if (typeof pmCronTask.destroy === 'function') {
+      pmCronTask.destroy();
+    }
+  }
+  if (queryPermissionCleanupCronTask) {
+    queryPermissionCleanupCronTask.stop();
+    if (typeof queryPermissionCleanupCronTask.destroy === 'function') {
+      queryPermissionCleanupCronTask.destroy();
+    }
+    queryPermissionCleanupCronTask = null;
   }
   if (pool) {
     await pool.end();

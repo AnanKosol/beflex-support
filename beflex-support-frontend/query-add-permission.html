@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/support/" />
+    <title>beflex-support | Query & add permission</title>
+    <link rel="stylesheet" href="styles.v3.css?v=20260319-theme2" />
+  </head>
+  <body data-nav-page="query-add-permission-service">
+    <div class="sidebar">
+      <div class="logo-area">
+        <div class="logo-placeholder">beflex <span>support</span></div>
+      </div>
+      <div class="nav-links"></div>
+    </div>
+
+    <div class="main-content" data-session-timeout-minutes="30">
+      <header>
+        <div class="breadcrumb">beflex Admin Support / Permission</div>
+        <h1>beflex support - Query & add permission</h1>
+      </header>
+
+      <section class="card">
+        <h3>Session</h3>
+        <div class="actions" style="margin-bottom: 12px;">
+          <span id="qapLoginStatus" class="status">Authenticated</span>
+          <button class="btn-secondary" id="qapLogoutBtn" type="button">Logout</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Details Query & add permission</h3>
+        <p class="muted">แอปนี้ใช้สำหรับสร้าง Template ของ AFTS Query และไฟล์ Permission Excel เพื่อนำไปค้นหาโหนดเป้าหมาย แล้วสั่ง replace permission ของโหนดตามข้อมูลในไฟล์อย่างเป็นขั้นตอน พร้อมติดตามสถานะการทำงานราย run และรายรายการได้</p>
+        <details class="guide-collapsible" id="qapGuideDetails" open>
+          <summary class="guide-toggle">ขั้นตอนการใช้งาน (กดเพื่อขยาย/ยุบ)</summary>
+          <div class="guide-content">
+            <div class="qap-guide-switch">
+              <button class="btn-secondary qap-guide-switch-btn active" id="qapGuideManualBtn" type="button">Manual</button>
+              <button class="btn-secondary qap-guide-switch-btn" id="qapGuideSettingBtn" type="button">Setting</button>
+            </div>
+
+            <div class="guide-note guide-note-accent" id="qapGuideManualSection">
+              <ol class="inline-list ordered-list">
+                <li>ดาวน์โหลดไฟล์ตัวอย่าง: <a href="samples/query-add-permission.xlsx" download>Query_add permission.xlsx</a> และเตรียมคอลัมน์ `Group_Name`, `Role`</li>
+                <li>สร้าง Template โดยกรอก Template Name + Type + AFTS Query และแนบ Permission Excel</li>
+                <li>ใน Template Report กด <span class="action-tag">Query</span> เพื่อสร้าง Query Run</li>
+                <li>ไปที่ Query Report แล้วกด <span class="action-tag">Run</span> หรือเข้า <span class="action-tag">Details Query</span> แล้วกด <span class="action-tag">Run</span></li>
+                <li>ระบบจะตรวจสมาชิก site ของทุก `Group_Name` ก่อน ถ้าขาดแม้แต่กลุ่มเดียวจะหยุดและแจ้งรายชื่อกลุ่มที่ไม่เป็นสมาชิก site</li>
+                <li>เมื่อผ่านการตรวจแล้ว ระบบจะ <strong>ลบ Permission เดิมทั้งหมด</strong> ออกจาก node แล้วใส่ Permission ใหม่จาก Excel แทน (Replace — ไม่ใช่ Merge)</li>
+              </ol>
+              
+              <h4>Query ตัวอย่างสำหรับ Copy</h4>
+              <div class="markdown-sample" id="qapExample1">PATH:"/app:company_home/st:sites/cm:engdoc/cm:documentLibrary/cm:_x0030_9_x0020_โครงการ//*" AND cm:name:'02 ธุรการ'</div>
+              <div class="markdown-sample" id="qapExample2">ANCESTOR:"workspace://SpacesStore/{{UUID_FOLDER}}" AND NOT (ASPECT:"sys:hidden" OR TYPE:"cm:thumbnail" OR TYPE:"cm:failedThumbnail")</div>
+              <p class="muted">ขอข้อมูลไฟล์และโฟลเดอร์ทั้งหมดที่อยู่ภายใต้ Folder ID นี้ โดยไม่เอาไฟล์ระบบที่ซ่อนอยู่ และไม่เอาไฟล์รูปตัวอย่าง (Thumbnails) ทั้งที่สำเร็จและไม่สำเร็จ</p>
+              <div class="markdown-sample" id="qapExample2">PARENT:"workspace://SpacesStore/{{UUID_FOLDER}}" AND NOT (ASPECT:"sys:hidden" OR TYPE:"cm:thumbnail" OR TYPE:"cm:failedThumbnail")</div>
+              <p class="muted">PARENT จะดึงเฉพาะสิ่งที่มี Folder นี้เป็น "พ่อ" โดยตรงเท่านั้น (Direct Child)โดยไม่เอาไฟล์ระบบที่ซ่อนอยู่ และไม่เอาไฟล์รูปตัวอย่าง (Thumbnails) ทั้งที่สำเร็จและไม่สำเร็จ</p>
+              <p class="muted">ANCESTOR: จะค้นหาแบบ Recursive คือรวมทั้งไฟล์และโฟลเดอร์ย่อยทั้งหมดที่อยู่ลึกลงไปกี่ชั้นก็ได้ (Sub-folders) ภายใต้ ID ของโฟลเดอร์ {{UUID_FOLDER}} ที่คุณระบุ</p>
+              <div class="markdown-sample" id="qapExample3">PATH:"/app:company_homest:sites/cm:engdoc//*" AND cm:modifier:"user_demo" AND cm:created:[2024-08-27T00:00:00 TO 2024-08-29T23:59:59]</div>
+               <p class="muted">ตามหาไฟล์หรือโฟลเดอร์ทั้งหมดในโครงสร้าง Path Site/Libraries (engdoc) ที่ถูกสร้างขึ้นระหว่างวันที่ 27-29 สิงหาคม 2024 และมีการแก้ไขล่าสุดโดย User ที่ชื่อ user_demo</p>
+              <h4>* หมายเหตุ</h4>
+              <p class="muted">- ถ้า Query มี `TYPE:"cm:content"` หรือ `TYPE:"cm:folder"` ระบบจะย้าย logic ไปใช้จากช่อง Type ให้อัตโนมัติ</p>
+            </div>
+
+            <div class="guide-note hidden" id="qapGuideSettingSection">
+              <h4>Settings: Query & add permission</h4>
+              <p class="muted">ตั้งค่าความเร็วการ add permission, retry, retention และตารางเวลาล้างรายละเอียด run โดยค่าที่บันทึกจะถูกใช้ทันที</p>
+
+              <div class="grid qap-setting-grid">
+                <div>
+                  <label for="qapSettingAddConcurrency">Add Concurrency</label>
+                  <input id="qapSettingAddConcurrency" type="number" min="1" max="20" step="1" />
+                </div>
+                <div>
+                  <label for="qapSettingAddMaxRetries">Max Retries</label>
+                  <input id="qapSettingAddMaxRetries" type="number" min="0" max="10" step="1" />
+                </div>
+                <div>
+                  <label for="qapSettingAddRetryBaseMs">Retry Base (ms)</label>
+                  <input id="qapSettingAddRetryBaseMs" type="number" min="100" max="30000" step="100" />
+                </div>
+                <div>
+                  <label for="qapSettingDetailRetentionDays">Detail Retention (days)</label>
+                  <input id="qapSettingDetailRetentionDays" type="number" min="1" max="365" step="1" />
+                </div>
+              </div>
+
+              <label for="qapSettingDetailCleanupCron">Detail Cleanup Cron</label>
+              <input id="qapSettingDetailCleanupCron" type="text" placeholder="0 3 * * *" />
+              <p class="muted">ตัวอย่าง: `0 3 * * *` = ทุกวันเวลา 03:00 (timezone เดียวกับ PM settings)</p>
+
+              <div class="actions">
+                <button class="btn-secondary" id="qapReloadSettingsBtn" type="button">Reload</button>
+                <button class="btn-primary" id="qapSaveSettingsBtn" type="button">Save Settings</button>
+                <span id="qapSettingsStatus" class="status">Idle</span>
+              </div>
+              <div id="qapSettingsError" class="error"></div>
+            </div>
+          </div>
+        </details>
+      </section>
+
+      <section class="card">
+        <h3>Create Template Query</h3>
+        <details class="guide-collapsible" open>
+          <summary class="guide-toggle">Create Template Query (กดเพื่อขยาย/ยุบ)</summary>
+          <div class="guide-content">
+            <div class="grid">
+              <div>
+                <label for="qapTemplateName">Template Name</label>
+                <input id="qapTemplateName" type="text" placeholder="เช่น Q1-2025-Folder-Permission" />
+              </div>
+              <div>
+                <label for="qapTargetType">Type</label>
+                <select id="qapTargetType">
+                  <option value="folder" selected>Folder</option>
+                  <option value="file">File</option>
+                  <option value="all">ALL</option>
+                </select>
+              </div>
+            </div>
+
+            <label for="qapQueryText">AFTS Query</label>
+            <textarea id="qapQueryText" rows="5" placeholder="ใส่ query เช่น PATH:&quot;/app:company_home/st:sites//.&quot; AND TYPE:&quot;cm:content&quot;"></textarea>
+            <div id="qapQueryWarning" class="qs-warning hidden"></div>
+
+            <div class="actions">
+              <button class="btn-secondary qap-use-example-btn" id="qapUseExample1Btn" type="button">Use Example 1</button>
+              <button class="btn-secondary qap-use-example-btn" id="qapUseExample2Btn" type="button">Use Example 2</button>
+              <button class="btn-secondary qap-use-example-btn" id="qapUseExample3Btn" type="button">Use Example 3</button>
+            </div>
+
+            <label for="qapTemplatePermissionFile">Permission Excel (optional)</label>
+            <input id="qapTemplatePermissionFile" type="file" accept=".xlsx" />
+            <p class="muted">หมายเหตุ: ต้องแนบไฟล์ก่อนจึงจะกด Create template ได้</p>
+
+            <div class="pm-checkbox-wrap" style="margin-top: 10px;">
+              <label class="pm-checkbox-label" for="qapTemplateInheritPermissions">
+                <input id="qapTemplateInheritPermissions" type="checkbox" checked />
+                Inherit Permissions (เปิดให้ node รับ permission จาก parent folder)
+              </label>
+            </div>
+
+            <div class="actions">
+              <button class="btn-secondary qap-template-test-btn" id="qapTestTemplateBtn" type="button">Test</button>
+              <button class="btn-primary" id="qapCreateTemplateBtn" type="button" disabled>Create Template</button>
+              <button class="btn-secondary" id="qapClearTemplateBtn" type="button">Clear</button>
+              <span id="qapTemplateTestResult" class="status">totalItems: -</span>
+              <span id="qapTemplateStatus" class="status">Idle</span>
+            </div>
+            <div id="qapTemplateError" class="error"></div>
+          </div>
+        </details>
+      </section>
+
+      <section class="card">
+        <h3>Template Report</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>No</th>
+              <th>Template name</th>
+              <th>Type</th>
+              <th>Excel name</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="qapTemplateBody"></tbody>
+        </table>
+
+        <div class="actions">
+          <label for="qapTemplatePageSize" style="margin: 0;">Paging</label>
+          <select id="qapTemplatePageSize">
+            <option value="30" selected>30</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+          <button class="btn-secondary" id="qapTemplatePrevBtn" type="button">Prev</button>
+          <button class="btn-secondary" id="qapTemplateNextBtn" type="button">Next</button>
+          <span id="qapTemplatePagingLabel" class="status">Page 1 / 1</span>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Query Report</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>No_Query</th>
+              <th>Template name</th>
+              <th>Type</th>
+              <th>Total</th>
+              <th>Failed</th>
+              <th>Status</th>
+              <th>Message</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="qapReportBody"></tbody>
+        </table>
+
+        <div class="actions">
+          <label for="qapPageSize" style="margin: 0;">Paging</label>
+          <select id="qapPageSize">
+            <option value="30" selected>30</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+          <button class="btn-secondary" id="qapPrevPageBtn" type="button">Prev</button>
+          <button class="btn-secondary" id="qapNextPageBtn" type="button">Next</button>
+          <span id="qapPagingLabel" class="status">Page 1 / 1</span>
+          <span id="qapRunStatus" class="status">Idle</span>
+        </div>
+        <div id="qapRunError" class="error"></div>
+      </section>
+    </div>
+
+    <div id="qapTemplateModal" class="pm-message-modal hidden" aria-hidden="true">
+      <div class="pm-message-dialog">
+        <h3 style="margin-top: 0;">Template details & edit</h3>
+        <input id="qapEditTemplateId" type="hidden" />
+
+        <label for="qapEditTemplateName">Template Name</label>
+        <input id="qapEditTemplateName" type="text" />
+
+        <label for="qapEditTargetType">Type</label>
+        <select id="qapEditTargetType">
+          <option value="folder">Folder</option>
+          <option value="file">File</option>
+          <option value="all">ALL</option>
+        </select>
+
+        <label for="qapEditQueryText">AFTS Query</label>
+        <textarea id="qapEditQueryText" rows="4"></textarea>
+
+        <div class="grid">
+          <div>
+            <label>Current Excel</label>
+            <div id="qapEditCurrentFile" class="muted">-</div>
+          </div>
+          <div>
+            <label for="qapEditPermissionFile">Replace Excel (.xlsx)</label>
+            <input id="qapEditPermissionFile" type="file" accept=".xlsx" />
+          </div>
+        </div>
+
+        <div class="pm-checkbox-wrap" style="margin-top: 10px;">
+          <label class="pm-checkbox-label" for="qapRemovePermissionFile">
+            <input id="qapRemovePermissionFile" type="checkbox" />
+            ลบไฟล์ Excel ปัจจุบัน (ถาวร)
+          </label>
+        </div>
+
+        <div class="pm-checkbox-wrap" style="margin-top: 8px;">
+          <label class="pm-checkbox-label" for="qapEditInheritPermissions">
+            <input id="qapEditInheritPermissions" type="checkbox" />
+            Inherit Permissions
+          </label>
+        </div>
+
+        <div class="actions">
+          <button class="btn-primary" id="qapSaveTemplateBtn" type="button">Save</button>
+          <button class="btn-secondary" id="qapDeleteTemplateBtn" type="button">Delete</button>
+          <button class="btn-secondary" id="qapDownloadTemplateFileBtn" type="button">Download excel</button>
+          <button class="btn-secondary" id="qapCloseTemplateModalBtn" type="button">Close</button>
+          <span id="qapEditTemplateStatus" class="status">Idle</span>
+        </div>
+        <div id="qapEditTemplateError" class="error"></div>
+      </div>
+    </div>
+
+    <div id="qapMessageModal" class="pm-message-modal hidden" aria-hidden="true">
+      <div class="pm-message-dialog">
+        <h3 style="margin-top: 0;">Details message</h3>
+        <pre id="qapMessageModalText" class="logs" style="min-height: 120px; max-height: 320px;">-</pre>
+        <div class="actions">
+          <button class="btn-secondary" id="qapCloseMessageModalBtn" type="button">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="dark-mode.js?v=20260318-theme1"></script>
+    <script src="sidebar-nav.js?v=20260317-nav10"></script>
+    <script src="query-add-permission-page.js?v=20260319-settings2"></script>
+  </body>
+</html>

@@ -1,3 +1,8 @@
 username,firstName,lastName,email,password,groups,enabled
-user.demo01,Demo,User01,user.demo01@example.com,Passw0rd!,GROUP_AO_Consumer;GROUP_AO_demo,true
-user.demo02,Demo,User02,user.demo02@example.com,Passw0rd!,GROUP_AO_Consumer,true
+user.demo01,demo01,D01,user.demo01@demo.com,Passw0rd!,GROUP_demo_createuser1;GROUP_demo_createuser2,true
+user.demo02,demo02,D02,user.demo02@demo.com,Passw0rd!,GROUP_demo_createuser1,true
+user.demo03,demo03,D03,user.demo03@demo.com,Passw0rd!,GROUP_demo_createuser1,true
+user.demo04,demo04,D04,user.demo04@demo.com,Passw0rd!,,true
+user.demo05,demo05,D05,user.demo05@demo.com,Passw0rd!,,true
+user.demo06,demo06,D06,user.demo06@demo.com,Passw0rd!,,true
+user.demo07,demo07,D07,user.demo07@demo.com,Passw0rd!,,true

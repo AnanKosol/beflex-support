@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <base href="/support/" />
+    <title>beflex-support | Details Query folder/File</title>
+    <link rel="stylesheet" href="styles.v3.css?v=20260318-theme1" />
+  </head>
+  <body data-nav-page="query-add-permission-service">
+    <div class="sidebar">
+      <div class="logo-area">
+        <div class="logo-placeholder">beflex <span>support</span></div>
+      </div>
+      <div class="nav-links"></div>
+    </div>
+
+    <div class="main-content" data-session-timeout-minutes="30">
+      <header>
+        <div class="breadcrumb">beflex Admin Support / Permission</div>
+        <h1>Details Query folder/File</h1>
+      </header>
+
+      <section class="card">
+        <div id="qapdRunMeta" class="muted">No run selected</div>
+        <div id="qapdRunSummary" class="qapd-summary" style="margin-top: 6px;">Status: all(0) wait(0) success(0) failed(0)</div>
+
+        <div class="actions qapd-toolbar-wrap">
+          <button class="btn-secondary" id="qapdBackBtn" type="button">Back</button>
+          <button class="btn-primary" id="qapdRunBtn" type="button" disabled>Run</button>
+          <button class="btn-secondary" id="qapdRetryFailedBtn" type="button" disabled>Retry Failed</button>
+
+          <label for="qapdStatusFilter" style="margin: 0;">Status</label>
+          <select id="qapdStatusFilter" style="width: 160px;">
+            <option value="all" selected>all</option>
+            <option value="wait">wait</option>
+            <option value="success">success</option>
+            <option value="failed">failed</option>
+          </select>
+
+          <input id="qapdSearchText" type="text" placeholder="Search name/uuid/path" style="max-width: 260px;" />
+          <button class="btn-secondary" id="qapdSearchBtn" type="button">Search</button>
+          <button class="btn-secondary" id="qapdClearBtn" type="button">Clear</button>
+
+          <label for="qapdPageSize" style="margin: 0;">Paging</label>
+          <select id="qapdPageSize" style="width: 100px;">
+            <option value="30" selected>30</option>
+            <option value="50">50</option>
+            <option value="100">100</option>
+          </select>
+
+          <button class="btn-secondary" id="qapdPrevBtn" type="button">Prev</button>
+          <button class="btn-secondary" id="qapdNextBtn" type="button">Next</button>
+          <span id="qapdPagingLabel" class="status">Page 1 / 1</span>
+        </div>
+
+        <div id="qapdError" class="error"></div>
+      </section>
+
+      <section class="card">
+        <table>
+          <thead>
+            <tr>
+              <th>File No</th>
+              <th>Name</th>
+              <th>UUID</th>
+              <th>Type</th>
+              <th>Status</th>
+              <th>Message</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="qapdBody"></tbody>
+        </table>
+
+        <div class="actions">
+          <button class="btn-secondary" id="qapdTopBtn" type="button">top</button>
+        </div>
+      </section>
+    </div>
+
+    <div id="qapdUuidModal" class="pm-message-modal hidden" aria-hidden="true">
+      <div class="pm-message-dialog">
+        <h3 style="margin-top: 0;">Details UUID</h3>
+        <div id="qapdUuidModalText" class="logs" style="min-height: 120px; max-height: 320px;"></div>
+        <div class="actions">
+          <button class="btn-secondary" id="qapdCloseUuidModalBtn" type="button">Close</button>
+        </div>
+      </div>
+    </div>
+
+    <script src="dark-mode.js?v=20260318-theme1"></script>
+    <script src="sidebar-nav.js?v=20260317-nav10"></script>
+    <script src="query-add-permission-detail-page.js?v=20260318-qapd5"></script>
+  </body>
+</html>

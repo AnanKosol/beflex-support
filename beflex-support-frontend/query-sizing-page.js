@@ -80,7 +80,7 @@ function setRunError(message) {
 }
 
 function looksLikeJsonEscapedQuery(query) {
-  return /\\"/.test(String(query || ''));
+  return /\\"/.test(String(query || '')) || /^"[\s\S]/.test(String(query || '').trim());
 }
 
 function setQueryWarning(query) {
@@ -88,8 +88,14 @@ function setQueryWarning(query) {
     return;
   }
 
-  if (looksLikeJsonEscapedQuery(query)) {
-    elements.queryWarning.textContent = 'Warning: Query ดูเหมือน JSON-escaped (\\\"). ระบบจะ normalize เป็น " อัตโนมัติก่อนยิง API';
+  const hasEscapedQuotes = /\\"/.test(String(query || ''));
+  const hasOuterQuote = /^"[\s\S]/.test(String(query || '').trim());
+  if (hasEscapedQuotes || hasOuterQuote) {
+    let msg = 'Warning: Query มีรูปแบบ JSON-encoded —';
+    if (hasOuterQuote) msg += ' ระบบจะตัด outer " ที่ครอบอยู่ออก';
+    if (hasEscapedQuotes) msg += (hasOuterQuote ? ' และ' : '') + ' แปลง \\" เป็น " อัตโนมัติ';
+    msg += ' ก่อนส่งไป Alfresco';
+    elements.queryWarning.textContent = msg;
     elements.queryWarning.classList.remove('hidden');
     return;
   }

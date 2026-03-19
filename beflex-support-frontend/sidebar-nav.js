@@ -11,6 +11,7 @@
   const menuItems = [
     { id: 'service', href: '/support/service.html', label: 'Import Permission' },
     { id: 'group-service', href: '/support/group-service.html', label: 'Import User to Group' },
+    { id: 'query-add-permission-service', href: '/support/query-add-permission.html', label: 'Query & add permission' },
     { id: 'user-csv-service', href: '/support/user-csv-service.html', label: 'Create user csv' },
     { id: 'query-sizing-service', href: '/support/query-sizing.html', label: 'Query Sizing file' },
     { id: 'audit-service', href: '/support/audit.html', label: 'Audit' },
