@@ -52,6 +52,7 @@
               
               <h4>Query ตัวอย่างสำหรับ Copy</h4>
               <div class="markdown-sample" id="qapExample1">PATH:"/app:company_home/st:sites/cm:engdoc/cm:documentLibrary/cm:_x0030_9_x0020_โครงการ//*" AND cm:name:'02 ธุรการ'</div>
+              <p class="muted">ตามหาไฟล์หรือโฟลเดอร์ทั้งหมดในโครงสร้าง Path Site/Libraries (engdoc) ที่มีชื่อว่า '02 ธุรการ'</p>
               <div class="markdown-sample" id="qapExample2">ANCESTOR:"workspace://SpacesStore/{{UUID_FOLDER}}" AND NOT (ASPECT:"sys:hidden" OR TYPE:"cm:thumbnail" OR TYPE:"cm:failedThumbnail")</div>
               <p class="muted">ขอข้อมูลไฟล์และโฟลเดอร์ทั้งหมดที่อยู่ภายใต้ Folder ID นี้ โดยไม่เอาไฟล์ระบบที่ซ่อนอยู่ และไม่เอาไฟล์รูปตัวอย่าง (Thumbnails) ทั้งที่สำเร็จและไม่สำเร็จ</p>
               <div class="markdown-sample" id="qapExample2">PARENT:"workspace://SpacesStore/{{UUID_FOLDER}}" AND NOT (ASPECT:"sys:hidden" OR TYPE:"cm:thumbnail" OR TYPE:"cm:failedThumbnail")</div>
