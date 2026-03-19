@@ -8,7 +8,7 @@ const FormData = require('form-data');
 const jwt = require('jsonwebtoken');
 const dotenv = require('dotenv');
 const { Pool } = require('pg');
-const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 const cron = require('node-cron');
 const crypto = require('crypto');
 const { createAlfrescoAuthProvider } = require('./services/alfresco-auth-provider');
@@ -379,18 +379,48 @@ function buildPermissionSearchQuery(baseQuery, targetType) {
   return buildPermissionQueryDefinition(baseQuery, targetType).effectiveQuery;
 }
 
-function parsePermissionExcelRows(filePath) {
-  const workbook = XLSX.readFile(filePath, { cellDates: false });
-  const firstSheet = workbook.SheetNames[0];
-  if (!firstSheet) {
+async function readFirstSheetRows(filePath) {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(filePath);
+  const worksheet = workbook.worksheets[0];
+  if (!worksheet) {
     return [];
   }
 
-  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet], {
-    defval: '',
-    raw: false
+  const headerRow = worksheet.getRow(1);
+  const headers = [];
+  headerRow.eachCell({ includeEmpty: true }, (cell, columnNumber) => {
+    headers[columnNumber] = String(cell?.text || '').trim();
   });
 
+  const rows = [];
+  for (let rowIndex = 2; rowIndex <= worksheet.rowCount; rowIndex += 1) {
+    const row = worksheet.getRow(rowIndex);
+    const mapped = {};
+    let hasValue = false;
+
+    for (let colIndex = 1; colIndex < headers.length; colIndex += 1) {
+      const key = String(headers[colIndex] || '').trim();
+      if (!key) {
+        continue;
+      }
+      const cellText = String(row.getCell(colIndex)?.text || '').trim();
+      mapped[key] = cellText;
+      if (cellText) {
+        hasValue = true;
+      }
+    }
+
+    if (hasValue) {
+      rows.push(mapped);
+    }
+  }
+
+  return rows;
+}
+
+async function parsePermissionExcelRows(filePath) {
+  const rows = await readFirstSheetRows(filePath);
   return rows.map((row, index) => {
     const groupName = normalizeGroupId(row.Group_Name || row.group_name || row.group || row.GROUP_NAME);
     const role = String(row.Role || row.role || '').trim();
@@ -1121,7 +1151,7 @@ async function processPermissionAddRun(runId, source = 'run') {
       throw new Error('Permission file not found on server');
     }
 
-    const permissionRows = parsePermissionExcelRows(permissionFilePath)
+    const permissionRows = (await parsePermissionExcelRows(permissionFilePath))
       .filter((row) => row.groupName && row.role);
 
     if (!permissionRows.length) {
@@ -1332,7 +1362,7 @@ async function processPermissionRetryFailedRun(runId, source = 'template') {
       throw new Error('Permission file not found on server');
     }
 
-    const permissionRows = parsePermissionExcelRows(permissionFilePath)
+    const permissionRows = (await parsePermissionExcelRows(permissionFilePath))
       .filter((row) => row.groupName && row.role);
 
     if (!permissionRows.length) {
@@ -2904,24 +2934,14 @@ async function addUserToGroup(groupId, userId, authHeader) {
   }
 }
 
-function parseGroupImportRows(filePath) {
-  const workbook = XLSX.readFile(filePath, { cellDates: false });
-  const firstSheet = workbook.SheetNames[0];
-  if (!firstSheet) {
-    return [];
-  }
-
-  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[firstSheet], {
-    defval: '',
-    raw: false
-  });
-
+async function parseGroupImportRows(filePath) {
+  const rows = await readFirstSheetRows(filePath);
   return rows.map((row, index) => ({
     lineNo: index + 2,
-    groupId: normalizeGroupId(row.group_id),
-    groupDisplayName: String(row.group_display_name || '').trim(),
-    userId: String(row.user_id || '').trim(),
-    action: String(row.action || 'ADD').trim().toUpperCase()
+    groupId: normalizeGroupId(row.group_id || row.Group_ID || row.groupId || row.GROUP_ID),
+    groupDisplayName: String(row.group_display_name || row.Group_Display_Name || row.groupDisplayName || '').trim(),
+    userId: String(row.user_id || row.User_ID || row.userId || '').trim(),
+    action: String(row.action || row.Action || 'ADD').trim().toUpperCase()
   }));
 }
 
@@ -3243,7 +3263,7 @@ async function processGroupMembershipImport(taskId) {
     });
 
     const inputPath = path.join(UPLOAD_DIR, task.stored_filename);
-    const rows = parseGroupImportRows(inputPath);
+    const rows = await parseGroupImportRows(inputPath);
     if (!rows.length) {
       throw new Error('No rows found in Excel');
     }
