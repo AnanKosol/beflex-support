@@ -23,7 +23,7 @@ if [[ -z "$(git status --porcelain)" ]]; then
 fi
 
 echo "[4/5] Commit"
-git add beflex-support-backend beflex-support-frontend
+git add beflex-support-backend beflex-support-frontend docker-compose.yml .env.example
 git commit -m "$COMMIT_MSG"
 
 echo "[5/5] Push"
